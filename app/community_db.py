@@ -45,8 +45,9 @@ def get_client_ip() -> str | None:
 
 
 def geolocate_ip(ip: str | None) -> dict:
-    """Look up country, region, org for an IP via ipapi.co (free, 30k/month).
+    """Look up country, region, org, VPN status for an IP via ip-api.com.
 
+    Free tier: 45 req/min, no key needed, returns proxy/hosting fields.
     Returns dict with keys: country, region, city, org, is_vpn.
     Results are cached in-memory.
     """
@@ -59,30 +60,19 @@ def geolocate_ip(ip: str | None) -> dict:
     try:
         import requests
         resp = requests.get(
-            f"https://ipapi.co/{ip}/json/",
+            f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,regionName,city,isp,org,proxy,hosting",
             timeout=3,
-            headers={"User-Agent": "Prefero/1.0"},
         )
         if resp.status_code == 200:
             data = resp.json()
-            if not data.get("error"):
-                org = data.get("org", "")
-                # Heuristic VPN/datacenter detection: check org name
-                _vpn_keywords = [
-                    "vpn", "proxy", "tunnel", "hosting", "datacenter",
-                    "data center", "cloud", "server", "digitalocean",
-                    "amazon", "aws", "google cloud", "microsoft azure",
-                    "linode", "vultr", "ovh", "hetzner", "mullvad",
-                    "nordvpn", "expressvpn", "surfshark", "proton",
-                ]
-                is_vpn = any(kw in org.lower() for kw in _vpn_keywords)
+            if data.get("status") == "success":
                 result = {
-                    "country": data.get("country_name", ""),
-                    "country_code": data.get("country_code", ""),
-                    "region": data.get("region", ""),
+                    "country": data.get("country", ""),
+                    "country_code": data.get("countryCode", ""),
+                    "region": data.get("regionName", ""),
                     "city": data.get("city", ""),
-                    "org": org,
-                    "is_vpn": is_vpn,
+                    "org": data.get("isp", "") or data.get("org", ""),
+                    "is_vpn": bool(data.get("proxy") or data.get("hosting")),
                 }
     except Exception as exc:
         logger.debug("Geo lookup failed for %s: %s", ip, exc)
