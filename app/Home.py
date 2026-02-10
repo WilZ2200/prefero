@@ -62,10 +62,11 @@ steps = [
     ("3", "Results", "Inspect estimates, WTP, and predictions.", "📈"),
     ("4", "Compare", "Compare models side-by-side.", "🔄"),
     ("5", "Bootstrap", "Bootstrap inference for robust SEs.", "🎯"),
-    ("6", "Community", "Discuss methods and share insights.", "💬"),
+    ("6", "Report", "Generate a professional analysis report.", "📝"),
+    ("7", "Community", "Discuss methods and share insights.", "💬"),
 ]
 
-cols = st.columns(6)
+cols = st.columns(7)
 for col, (num, title, desc, icon) in zip(cols, steps):
     with col:
         with st.container(border=True):

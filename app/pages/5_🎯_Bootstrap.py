@@ -211,12 +211,22 @@ if st.button("Run Bootstrap", type="primary", use_container_width=True):
         progress_bar.empty()
         st.session_state["_estimation_running"] = False
         st.error(f"Bootstrap failed: {exc}")
+        try:
+            from community_db import log_activity
+            log_activity(st.session_state.get("username", "anonymous"), "bootstrap_error", f"error={str(exc)[:200]}")
+        except Exception:
+            pass
         st.exception(exc)
         st.stop()
 
     st.session_state["_estimation_running"] = False
     progress_bar.progress(1.0, text="Complete")
     st.session_state.bootstrap_results = boot
+    try:
+        from community_db import log_activity
+        log_activity(st.session_state.get("username", "anonymous"), "bootstrap_complete", f"n_reps={boot.n_replications}, n_success={boot.n_successful}, seed={int(boot_seed)}")
+    except Exception:
+        pass
 
     if boot.n_successful == boot.n_replications:
         status_container.success(

@@ -99,6 +99,18 @@ def init_session_state() -> None:
     require_queue_slot()
     queue_heartbeat()
     st.session_state["_queue_admitted"] = True
+    import inspect
+    _caller = inspect.stack()[1].filename
+    _page = Path(_caller).stem
+    _visit_key = f"_visited_{_page}"
+    if not st.session_state.get(_visit_key):
+        st.session_state[_visit_key] = True
+        try:
+            from community_db import init_db, log_activity
+            init_db()
+            log_activity(st.session_state.get("username", "anonymous"), "page_visit", _page)
+        except Exception:
+            pass
 
 
 def data_is_loaded() -> bool:
@@ -107,7 +119,7 @@ def data_is_loaded() -> bool:
 
 
 def slowbro_status() -> None:
-    """Inject global Slowbro status widget replacing Streamlit's running-man icon."""
+    """Inject global Slowbro status widget into Streamlit's fixed header."""
     _slowbro_img = (
         "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites"
         "/pokemon/other/official-artwork/80.png"
@@ -119,54 +131,26 @@ def slowbro_status() -> None:
         [data-testid="stStatusWidget"] {{
             display: none !important;
         }}
-        /* Slowbro pill — fixed top-right */
-        .slowbro-pill {{
-            position: fixed;
-            top: 10px;
+        /* Slowbro pill — injected into Streamlit's fixed header via ::after */
+        [data-testid="stHeader"]::after {{
+            content: "Slowbro is resting...";
+            position: absolute;
+            top: 50%;
             right: 46px;
-            z-index: 999999;
+            transform: translateY(-50%);
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 3px 12px 3px 6px;
+            padding: 3px 12px 3px 30px;
             border-radius: 20px;
-            background: rgba(50,50,50,0.9);
+            background: rgba(50,50,50,0.9) url("{_slowbro_img}") no-repeat 6px center / 20px 20px;
             font-size: 0.76rem;
             color: #bbb;
             pointer-events: none;
             white-space: nowrap;
-            width: 210px;
-        }}
-        .slowbro-pill img {{
-            width: 24px;
-            height: 24px;
-            object-fit: contain;
-            flex-shrink: 0;
-        }}
-        .slowbro-pill .sb-text {{
-            flex-shrink: 0;
-        }}
-        .slowbro-pill .sb-dots {{
-            display: inline-block;
-            width: 1.2em;
-            text-align: left;
-            overflow: hidden;
-        }}
-        .slowbro-pill .sb-dots::after {{
-            content: "...";
-        }}
-        @keyframes typing-dots {{
-            0%   {{ content: ""; }}
-            25%  {{ content: "."; }}
-            50%  {{ content: ".."; }}
-            75%  {{ content: "..."; }}
+            z-index: 999;
         }}
         </style>
-        <div class="slowbro-pill">
-            <img src="{_slowbro_img}" alt="Slowbro" />
-            <span class="sb-text">Slowbro is resting</span>
-            <span class="sb-dots"></span>
-        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -280,7 +264,8 @@ _PAGE_ORDER = [
     ("pages/3_📈_Results.py", "Results", "📈"),
     ("pages/4_🔄_Compare.py", "Compare", "🔄"),
     ("pages/5_🎯_Bootstrap.py", "Bootstrap", "🎯"),
-    ("pages/6_💬_Community.py", "Community", "💬"),
+    ("pages/6_📝_Report.py", "Report", "📝"),
+    ("pages/7_💬_Community.py", "Community", "💬"),
 ]
 
 

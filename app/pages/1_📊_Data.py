@@ -17,6 +17,9 @@ if str(SRC) not in sys.path:
 
 from dce_analyzer.apollo import load_apollo_long  # noqa: E402
 from dce_analyzer.format_converter import (  # noqa: E402
+    _auto_attribute_groups,
+    _guess_choice_col,
+    _guess_id_col,
     apply_column_mapping,
     detect_format,
     infer_structure,
@@ -46,7 +49,9 @@ if st.session_state.get("df") is not None or st.session_state.get("_excel_result
         for key in ["df", "data_label", "true_params", "model_results", "model_history",
                      "bootstrap_results", "lc_result", "lc_bic_comparison", "lc_best_q",
                      "_excel_result", "_excel_name", "_wide_raw", "_wide_name",
-                     "inferred_columns"]:
+                     "_auto_converted", "_auto_meta",
+                     "inferred_columns",
+                     "_generated_report", "_report_label"]:
             st.session_state.pop(key, None)
         st.rerun()
 
@@ -266,6 +271,7 @@ if uploaded is not None:
     # This prevents re-parsing on every Streamlit rerun.
     already_parsed = (
         st.session_state.get("_excel_result") is not None
+        or st.session_state.get("_auto_converted") is not None
         or st.session_state.get("_wide_raw") is not None
         or st.session_state.df is not None
     )
@@ -275,6 +281,11 @@ if uploaded is not None:
             # ── Excel upload with dictionary sheet support ──
             with st.spinner("Reading Excel file..."):
                 excel_result = load_excel_with_dictionary(uploaded)
+            try:
+                from community_db import log_activity
+                log_activity(st.session_state.get("username", "anonymous"), "data_upload", f"file={file_name}, format=excel")
+            except Exception:
+                pass
 
             st.session_state["_excel_result"] = excel_result
             st.session_state["_excel_name"] = file_name
@@ -282,13 +293,49 @@ if uploaded is not None:
         else:
             # ── CSV upload (existing logic) ──
             raw_df = pd.read_csv(uploaded)
+            try:
+                from community_db import log_activity
+                log_activity(st.session_state.get("username", "anonymous"), "data_upload", f"file={file_name}, rows={raw_df.shape[0]}, cols={raw_df.shape[1]}, format=csv")
+            except Exception:
+                pass
             fmt = detect_format(raw_df)
 
             if fmt == "long":
                 _store(raw_df, f"Uploaded: {file_name}")
             else:
-                st.session_state["_wide_raw"] = raw_df
-                st.session_state["_wide_name"] = file_name
+                # Auto-detect and try auto-conversion
+                auto_groups = _auto_attribute_groups(raw_df.columns.tolist())
+                auto_id = _guess_id_col(raw_df.columns.tolist())
+                auto_choice = _guess_choice_col(raw_df.columns.tolist())
+
+                if auto_groups:
+                    try:
+                        import warnings
+                        with warnings.catch_warnings(record=True):
+                            warnings.simplefilter("always")
+                            auto_long = wide_to_long(
+                                raw_df,
+                                attribute_groups=auto_groups,
+                                id_col=auto_id,
+                                choice_col=auto_choice,
+                            )
+                        st.session_state["_auto_converted"] = auto_long
+                        st.session_state["_auto_meta"] = {
+                            "format": "wide",
+                            "id_col": auto_id,
+                            "choice_col": auto_choice,
+                            "groups": {k: list(v) for k, v in auto_groups.items()},
+                            "result_shape": auto_long.shape,
+                        }
+                        st.session_state["_wide_raw"] = raw_df
+                        st.session_state["_wide_name"] = file_name
+                    except Exception:
+                        # Auto-conversion failed, fall back to manual
+                        st.session_state["_wide_raw"] = raw_df
+                        st.session_state["_wide_name"] = file_name
+                else:
+                    st.session_state["_wide_raw"] = raw_df
+                    st.session_state["_wide_name"] = file_name
 
     # Show status messages for current state
     if st.session_state.get("_excel_result") is not None:
@@ -359,6 +406,11 @@ with st.expander("Alternative: Generate or Load Sample Data", expanded=False):
                     bws=sim_bws,
                 )
             _store(output.data, "Simulated Choice Data", output.true_parameters)
+            try:
+                from community_db import log_activity
+                log_activity(st.session_state.get("username", "anonymous"), "data_simulate", f"N={n_individuals}, T={n_tasks}, J={n_alts}")
+            except Exception:
+                pass
             st.success("Simulated dataset generated.")
 
     with tab_apollo:
@@ -371,6 +423,11 @@ with st.expander("Alternative: Generate or Load Sample Data", expanded=False):
             with st.spinner("Downloading and transforming Apollo dataset..."):
                 df = load_apollo_long("swiss_route_choice")
             _store(df, "Apollo swiss_route_choice")
+            try:
+                from community_db import log_activity
+                log_activity(st.session_state.get("username", "anonymous"), "data_apollo", "swiss_route_choice")
+            except Exception:
+                pass
             st.success("Apollo dataset loaded.")
 
 
@@ -444,10 +501,29 @@ if st.session_state.get("_excel_result") is not None:
                     # check if result is wide or long
                     fmt = detect_format(renamed_df)
                     if fmt == "wide":
+                        _excel_wide_name = st.session_state.get("_excel_name", "excel")
                         st.session_state["_wide_raw"] = renamed_df
-                        st.session_state["_wide_name"] = st.session_state.get("_excel_name", "excel")
+                        st.session_state["_wide_name"] = _excel_wide_name
                         st.session_state.pop("_excel_result", None)
-                        st.info("Columns renamed. Data is **wide format** -- proceed to conversion below.")
+                        # Try auto-conversion
+                        _ag = _auto_attribute_groups(renamed_df.columns.tolist())
+                        _ai = _guess_id_col(renamed_df.columns.tolist())
+                        _ac = _guess_choice_col(renamed_df.columns.tolist())
+                        if _ag:
+                            try:
+                                import warnings as _w
+                                with _w.catch_warnings(record=True):
+                                    _w.simplefilter("always")
+                                    _al = wide_to_long(renamed_df, attribute_groups=_ag, id_col=_ai, choice_col=_ac)
+                                st.session_state["_auto_converted"] = _al
+                                st.session_state["_auto_meta"] = {
+                                    "format": "wide",
+                                    "id_col": _ai, "choice_col": _ac,
+                                    "groups": {k: list(v) for k, v in _ag.items()},
+                                    "result_shape": _al.shape,
+                                }
+                            except Exception:
+                                pass
                         st.rerun()
                     else:
                         _store(renamed_df, f"Uploaded: {st.session_state.get('_excel_name', 'excel')} (mapped)")
@@ -460,10 +536,29 @@ if st.session_state.get("_excel_result") is not None:
                 if st.button("Skip Mapping & Load Raw"):
                     fmt = detect_format(raw_df)
                     if fmt == "wide":
+                        _excel_wide_name = st.session_state.get("_excel_name", "excel")
                         st.session_state["_wide_raw"] = raw_df
-                        st.session_state["_wide_name"] = st.session_state.get("_excel_name", "excel")
+                        st.session_state["_wide_name"] = _excel_wide_name
                         st.session_state.pop("_excel_result", None)
-                        st.info("Loaded raw columns. Data is **wide format** -- proceed to conversion below.")
+                        # Try auto-conversion
+                        _ag = _auto_attribute_groups(raw_df.columns.tolist())
+                        _ai = _guess_id_col(raw_df.columns.tolist())
+                        _ac = _guess_choice_col(raw_df.columns.tolist())
+                        if _ag:
+                            try:
+                                import warnings as _w
+                                with _w.catch_warnings(record=True):
+                                    _w.simplefilter("always")
+                                    _al = wide_to_long(raw_df, attribute_groups=_ag, id_col=_ai, choice_col=_ac)
+                                st.session_state["_auto_converted"] = _al
+                                st.session_state["_auto_meta"] = {
+                                    "format": "wide",
+                                    "id_col": _ai, "choice_col": _ac,
+                                    "groups": {k: list(v) for k, v in _ag.items()},
+                                    "result_shape": _al.shape,
+                                }
+                            except Exception:
+                                pass
                         st.rerun()
                     else:
                         _store(raw_df, f"Uploaded: {st.session_state.get('_excel_name', 'excel')} (raw)")
@@ -481,18 +576,86 @@ if st.session_state.get("_excel_result") is not None:
                 if fmt == "wide":
                     st.session_state["_wide_raw"] = raw_df
                     st.session_state["_wide_name"] = st.session_state.get("_excel_name", "excel")
+                    # Try auto-conversion
+                    _ag = _auto_attribute_groups(raw_df.columns.tolist())
+                    _ai = _guess_id_col(raw_df.columns.tolist())
+                    _ac = _guess_choice_col(raw_df.columns.tolist())
+                    if _ag:
+                        try:
+                            import warnings as _w
+                            with _w.catch_warnings(record=True):
+                                _w.simplefilter("always")
+                                _al = wide_to_long(raw_df, attribute_groups=_ag, id_col=_ai, choice_col=_ac)
+                            st.session_state["_auto_converted"] = _al
+                            st.session_state["_auto_meta"] = {
+                                "format": "wide",
+                                "id_col": _ai, "choice_col": _ac,
+                                "groups": {k: list(v) for k, v in _ag.items()},
+                                "result_shape": _al.shape,
+                            }
+                        except Exception:
+                            pass
                 else:
                     _store(raw_df, f"Uploaded: {st.session_state.get('_excel_name', 'excel')}")
                 st.session_state.pop("_excel_result", None)
                 st.session_state.pop("_excel_name", None)
                 st.rerun()
 
+# ── Auto-conversion confirmation card ─────────────────────
+if st.session_state.get("_auto_converted") is not None:
+    meta = st.session_state.get("_auto_meta", {})
+    auto_long = st.session_state["_auto_converted"]
+
+    st.success("Auto-detected: **Wide format** -> **Long format**")
+
+    with st.container():
+        info_parts = []
+        if meta.get("id_col"):
+            info_parts.append(f"ID column: **{meta['id_col']}** (detected)")
+        else:
+            info_parts.append("ID column: *(auto-generated)*")
+        if meta.get("choice_col"):
+            info_parts.append(f"Choice column: **{meta['choice_col']}** (detected)")
+        else:
+            info_parts.append("Choice column: *(auto-generated)*")
+
+        groups = meta.get("groups", {})
+        if groups:
+            group_summary = ", ".join(f"{k}({len(v)})" for k, v in groups.items())
+            info_parts.append(f"Attribute groups: {group_summary}")
+
+        shape = meta.get("result_shape", auto_long.shape)
+        info_parts.append(f"Result: **{shape[0]}** rows x **{shape[1]}** columns")
+
+        for part in info_parts:
+            st.markdown(f"- {part}")
+
+    acc_col, edit_col = st.columns(2)
+    with acc_col:
+        if st.button("Accept & Continue", type="primary", key="_auto_accept"):
+            _store(auto_long, f"Uploaded: {st.session_state.get('_wide_name', 'file')} (auto-converted)")
+            st.session_state.pop("_auto_converted", None)
+            st.session_state.pop("_auto_meta", None)
+            st.session_state.pop("_wide_raw", None)
+            st.session_state.pop("_wide_name", None)
+            st.rerun()
+    with edit_col:
+        if st.button("Edit Settings", key="_auto_edit"):
+            # Clear auto-converted, keep _wide_raw for manual UI
+            st.session_state.pop("_auto_converted", None)
+            st.session_state.pop("_auto_meta", None)
+            st.rerun()
+
+    # Show preview
+    with st.expander("Preview converted data"):
+        st.dataframe(auto_long.head(20), use_container_width=True, hide_index=True)
+
+    st.stop()  # Don't show manual UI while confirmation is displayed
+
 # ── Wide-to-long conversion UI ────────────────────────────
 if st.session_state.get("_wide_raw") is not None:
     raw_df = st.session_state["_wide_raw"]
     with st.expander("Wide-to-Long Conversion", expanded=True):
-        from dce_analyzer.format_converter import _auto_attribute_groups
-
         auto_groups = _auto_attribute_groups(raw_df.columns.tolist())
 
         if auto_groups:

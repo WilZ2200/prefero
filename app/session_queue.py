@@ -106,6 +106,21 @@ def is_username_active(username: str) -> bool:
         return False
 
 
+def force_evict_username(username: str) -> None:
+    """Evict all other sessions using this username so the caller can log in."""
+    sid = _ensure_session_id()
+    with _lock:
+        _cleanup_stale()
+        to_remove = [
+            other_sid
+            for other_sid, uname in _session_usernames.items()
+            if uname == username and other_sid != sid
+        ]
+        for other_sid in to_remove:
+            _active_sessions.pop(other_sid, None)
+            _session_usernames.pop(other_sid, None)
+
+
 def active_count() -> int:
     """How many sessions are currently active."""
     with _lock:

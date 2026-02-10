@@ -59,6 +59,7 @@ class EstimationResult:
     covariance_se: np.ndarray | None = field(default=None, repr=False)
     correlation_se: np.ndarray | None = field(default=None, repr=False)
     correlation_test: pd.DataFrame | None = field(default=None, repr=False)
+    raw_theta: np.ndarray | None = field(default=None, repr=False)
 
     def summary_dict(self) -> dict[str, Any]:
         d = {
@@ -661,6 +662,7 @@ class MixedLogitEstimator:
             covariance_se=cov_se,
             correlation_se=cor_se,
             correlation_test=cor_test,
+            raw_theta=theta_hat,
         )
 
 

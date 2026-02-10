@@ -1,4 +1,4 @@
-"""Prefero — Page 6: Community Discussion Forum."""
+"""Prefero — Page 7: Community Discussion Forum."""
 
 from __future__ import annotations
 

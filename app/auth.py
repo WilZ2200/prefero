@@ -168,6 +168,42 @@ def auth_gate() -> bool:
         unsafe_allow_html=True,
     )
 
+    # ── Concurrent login conflict resolution ─────────────────────
+    _conflict_user = st.session_state.get("_auth_conflict_user")
+    if _conflict_user:
+        _conflict_id = st.session_state.get("_auth_conflict_id", 0)
+        _conflict_source = st.session_state.get("_auth_conflict_source", "")
+
+        st.warning(
+            f"**{_conflict_user}** is currently logged in from another session. "
+            "Do you want to kick them off and log in here?"
+        )
+
+        _kick_col, _cancel_col = st.columns(2)
+        with _kick_col:
+            if st.button("Yes, log in here", type="primary", key="_auth_kick_btn", use_container_width=True):
+                from session_queue import force_evict_username, register_username
+                force_evict_username(_conflict_user)
+                st.session_state["authenticated"] = True
+                st.session_state["username"] = _conflict_user
+                st.session_state["user_id"] = _conflict_id
+                register_username(_conflict_user)
+                from community_db import log_activity
+                log_activity(_conflict_user, "login", f"{_conflict_source} (kicked previous session)")
+                # Clean up conflict state
+                st.session_state.pop("_auth_conflict_user", None)
+                st.session_state.pop("_auth_conflict_id", None)
+                st.session_state.pop("_auth_conflict_source", None)
+                st.rerun()
+        with _cancel_col:
+            if st.button("Cancel", key="_auth_cancel_kick_btn", use_container_width=True):
+                st.session_state.pop("_auth_conflict_user", None)
+                st.session_state.pop("_auth_conflict_id", None)
+                st.session_state.pop("_auth_conflict_source", None)
+                st.rerun()
+
+        return False
+
     tab_member, tab_invite = st.tabs(["MUCHE Member", "Invitation Code"])
 
     # ── Tab 1: MUCHE Member (name + password) ─────────────────────
@@ -204,10 +240,10 @@ def auth_gate() -> bool:
                     elif _hash_password(pw_input) == existing.email:
                         from session_queue import is_username_active, register_username
                         if is_username_active(existing.username):
-                            st.error(
-                                f"**{existing.username}** is already logged in. "
-                                "Wait for that session to expire (2 min idle)."
-                            )
+                            st.session_state["_auth_conflict_user"] = existing.username
+                            st.session_state["_auth_conflict_id"] = existing.id
+                            st.session_state["_auth_conflict_source"] = "MUCHE member"
+                            st.rerun()
                         else:
                             st.session_state["authenticated"] = True
                             st.session_state["username"] = existing.username
@@ -311,6 +347,40 @@ def username_gate() -> bool:
         unsafe_allow_html=True,
     )
 
+    # ── Concurrent login conflict resolution ─────────────────────
+    _conflict_user = st.session_state.get("_auth_conflict_user")
+    if _conflict_user:
+        _conflict_id = st.session_state.get("_auth_conflict_id", 0)
+        _conflict_source = st.session_state.get("_auth_conflict_source", "")
+
+        st.warning(
+            f"**{_conflict_user}** is currently logged in from another session. "
+            "Do you want to kick them off and log in here?"
+        )
+
+        _kick_col, _cancel_col = st.columns(2)
+        with _kick_col:
+            if st.button("Yes, log in here", type="primary", key="_ugate_kick_btn", use_container_width=True):
+                from session_queue import force_evict_username, register_username
+                force_evict_username(_conflict_user)
+                st.session_state["username"] = _conflict_user
+                st.session_state["user_id"] = _conflict_id
+                register_username(_conflict_user)
+                from community_db import log_activity
+                log_activity(_conflict_user, "login", f"{_conflict_source} (kicked previous session)")
+                st.session_state.pop("_auth_conflict_user", None)
+                st.session_state.pop("_auth_conflict_id", None)
+                st.session_state.pop("_auth_conflict_source", None)
+                st.rerun()
+        with _cancel_col:
+            if st.button("Cancel", key="_ugate_cancel_kick_btn", use_container_width=True):
+                st.session_state.pop("_auth_conflict_user", None)
+                st.session_state.pop("_auth_conflict_id", None)
+                st.session_state.pop("_auth_conflict_source", None)
+                st.rerun()
+
+        return False
+
     name_input = st.text_input(
         "Username",
         key="_auth_username_input",
@@ -335,10 +405,10 @@ def username_gate() -> bool:
                 existing = get_user_by_name(name)
                 if existing:
                     if is_username_active(existing.username):
-                        st.error(
-                            f"**{existing.username}** is already logged in. "
-                            "Wait for that session to expire."
-                        )
+                        st.session_state["_auth_conflict_user"] = existing.username
+                        st.session_state["_auth_conflict_id"] = existing.id
+                        st.session_state["_auth_conflict_source"] = "Returning user"
+                        st.rerun()
                     else:
                         st.session_state["username"] = existing.username
                         st.session_state["user_id"] = existing.id

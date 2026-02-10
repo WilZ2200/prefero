@@ -496,6 +496,11 @@ else:
                 wtp_df = compute_wtp(estimation, cost_variable=cost_variable)
 
                 if not wtp_df.empty:
+                    try:
+                        from community_db import log_activity
+                        log_activity(st.session_state.get("username", "anonymous"), "wtp_computed", f"cost_var={cost_variable}")
+                    except Exception:
+                        pass
                     st.dataframe(wtp_df, use_container_width=True, hide_index=True)
 
                     wtp_has_se = wtp_df["wtp_std_error"].notna().any()

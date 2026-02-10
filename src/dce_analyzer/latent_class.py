@@ -50,6 +50,7 @@ class LatentClassResult:
     em_iterations: int = 0
     em_ll_history: list[float] = field(default_factory=list)
     em_converged: bool = False
+    raw_theta: np.ndarray | None = field(default=None, repr=False)
 
     def summary_dict(self) -> dict[str, Any]:
         d = {
@@ -550,6 +551,7 @@ class LatentClassEstimator:
             all_start_lls=all_start_lls,
             best_start_index=best_start_idx,
             optimizer_method="L-BFGS-B",
+            raw_theta=theta_hat,
         )
 
     # ── EM algorithm ──────────────────────────────────────────────────
@@ -1049,4 +1051,5 @@ class LatentClassEstimator:
             em_iterations=best_em_iters,
             em_ll_history=best_em_history,
             em_converged=best_em_converged,
+            raw_theta=theta_hat,
         )

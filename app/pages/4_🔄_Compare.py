@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -214,6 +215,11 @@ if restricted != unrestricted:
         from scipy.stats import chi2
 
         p_val = float(1 - chi2.cdf(lr_stat, df_diff))
+        try:
+            from community_db import log_activity
+            log_activity(st.session_state.get("username", "anonymous"), "lr_test", f"LR={lr_stat:.2f}, p={p_val:.4f}")
+        except Exception:
+            pass
 
         l1, l2, l3 = st.columns(3)
         l1.metric("LR statistic", f"{lr_stat:.4f}")
@@ -325,6 +331,11 @@ if candidate_cols:
         r1.metric("Chi-squared statistic", f"{sl_result.chi2_stat:.4f}")
         r2.metric("Degrees of freedom", f"{sl_result.df}")
         r3.metric("p-value", f"{sl_result.p_value:.6f}")
+        try:
+            from community_db import log_activity
+            log_activity(st.session_state.get("username", "anonymous"), "sl_test", f"chi2={sl_result.chi2_stat:.2f}, p={sl_result.p_value:.4f}")
+        except Exception:
+            pass
 
         ll1, ll2, ll3 = st.columns(3)
         ll1.metric("LL (pooled)", f"{sl_result.ll_pooled:.3f}")
@@ -352,5 +363,148 @@ st.download_button(
     file_name="model_comparison.csv",
     mime="text/csv",
 )
+
+# ── 8  Cross-validation ──────────────────────────────────────────
+st.divider()
+st.subheader("8. Cross-validation")
+
+with st.expander("What is cross-validation?"):
+    st.markdown(
+        "**K-fold cross-validation** splits individuals into K groups (folds). "
+        "For each fold, the model is estimated on K-1 folds and tested on the held-out fold.\n\n"
+        "- **Out-of-sample LL**: How well the model predicts choices it wasn't trained on. "
+        "Higher (less negative) is better.\n"
+        "- **Hit rate**: The proportion of correctly predicted choices on held-out data.\n"
+        "- Cross-validation helps detect **overfitting** — a model that fits training data well "
+        "but performs poorly on new data."
+    )
+
+# Model selector — pick any model from history (not just the selected subset)
+all_model_labels = [e.get("label", e.get("name", "unknown")) for e in history]
+cv_model_label = st.selectbox(
+    "Select a model for cross-validation",
+    options=all_model_labels,
+    key="cv_model_selector",
+    help="Choose a model from your estimation history to cross-validate.",
+)
+
+cv_col1, cv_col2, cv_col3 = st.columns(3)
+cv_k = cv_col1.number_input("Number of folds (K)", min_value=3, max_value=10, value=5, key="cv_k_input")
+cv_seed = cv_col2.number_input("Random seed", min_value=1, value=42, key="cv_seed_input")
+cv_run = cv_col3.button("Run Cross-Validation", use_container_width=True, key="cv_run_btn")
+
+if "cv_results" not in st.session_state:
+    st.session_state["cv_results"] = {}
+
+if cv_run:
+    cv_entry = next(e for e in history if e.get("label", e.get("name", "unknown")) == cv_model_label)
+
+    # Build FullModelSpec from entry
+    full_spec = cv_entry.get("full_spec")
+    if full_spec is None:
+        from dce_analyzer.config import FullModelSpec as _FullModelSpec
+        _sp = cv_entry["spec"]
+        full_spec = _FullModelSpec(
+            id_col=_sp.id_col, task_col=_sp.task_col,
+            alt_col=_sp.alt_col, choice_col=_sp.choice_col,
+            variables=_sp.variables, model_type=cv_entry["model_type"],
+            n_draws=_sp.n_draws, n_classes=_sp.n_classes,
+            membership_cols=_sp.membership_cols,
+        )
+
+    from dce_analyzer.cross_validation import cross_validate  # noqa: E402
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    def _cv_progress(fold: int, total: int, msg: str) -> None:
+        progress_bar.progress((fold + 1) / total)
+        status_text.text(msg)
+
+    try:
+        cv_result = cross_validate(
+            df=st.session_state.df,
+            spec=full_spec,
+            k=int(cv_k),
+            seed=int(cv_seed),
+            progress_callback=_cv_progress,
+        )
+        st.session_state["cv_results"][cv_model_label] = cv_result
+        progress_bar.progress(1.0)
+        status_text.text("Cross-validation complete!")
+        try:
+            from community_db import log_activity
+            log_activity(
+                st.session_state.get("username", "anonymous"),
+                "cross_validation",
+                f"model={cv_model_label}, K={cv_k}, mean_test_ll={cv_result.mean_test_ll:.3f}",
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"Cross-validation failed: {exc}")
+        st.exception(exc)
+
+# Display results from session state
+if st.session_state.get("cv_results"):
+    for label, cv_res in st.session_state["cv_results"].items():
+        st.markdown(f"#### CV results: {label}")
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Mean out-of-sample LL", f"{cv_res.mean_test_ll:.3f}")
+        m2.metric("Mean LL per obs", f"{cv_res.mean_test_ll_per_obs:.4f}")
+        m3.metric("Mean hit rate", f"{cv_res.mean_hit_rate:.3%}")
+        m4.metric("Total runtime (s)", f"{cv_res.total_runtime:.1f}")
+
+        # Per-fold table
+        fold_rows = []
+        for fr in cv_res.fold_results:
+            fold_rows.append({
+                "Fold": fr.fold + 1,
+                "Train LL": round(fr.train_ll, 3),
+                "Test LL": round(fr.test_ll, 3),
+                "Hit rate": round(fr.hit_rate, 4),
+                "Train N (ind)": fr.train_n_ind,
+                "Test N (ind)": fr.test_n_ind,
+                "Train N (obs)": fr.train_n_obs,
+                "Test N (obs)": fr.test_n_obs,
+                "Converged": fr.converged,
+                "Runtime (s)": round(fr.runtime, 2),
+            })
+        fold_df = pd.DataFrame(fold_rows)
+        st.dataframe(fold_df, use_container_width=True, hide_index=True)
+
+        # Per-fold bar chart
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=[f"Fold {r['Fold']}" for r in fold_rows],
+            y=[r["Test LL"] for r in fold_rows],
+            marker_color="steelblue",
+        ))
+        fig.update_layout(
+            title="Out-of-sample log-likelihood by fold",
+            xaxis_title="Fold",
+            yaxis_title="Test LL",
+            template="plotly_dark",
+        )
+        st.plotly_chart(fig, use_container_width=True, key=f"cv_fold_chart_{label}")
+
+    # Comparison table if multiple models have CV results
+    if len(st.session_state["cv_results"]) > 1:
+        st.markdown("#### Cross-validation comparison")
+        compare_rows = []
+        for lbl, res in st.session_state["cv_results"].items():
+            compare_rows.append({
+                "Model": lbl,
+                "K": res.k,
+                "Mean test LL": round(res.mean_test_ll, 3),
+                "Mean LL/obs": round(res.mean_test_ll_per_obs, 4),
+                "Mean hit rate": round(res.mean_hit_rate, 4),
+                "Runtime (s)": round(res.total_runtime, 1),
+            })
+        cv_compare_df = pd.DataFrame(compare_rows)
+        st.dataframe(cv_compare_df, use_container_width=True, hide_index=True)
 
 slowbro_next_step("pages/4_🔄_Compare.py")

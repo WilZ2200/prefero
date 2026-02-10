@@ -1246,19 +1246,8 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
             line-height: 1.3;
         }}
         /* Switch top-right Slowbro to working state */
-        .slowbro-pill .sb-text {{
-            visibility: hidden;
-            position: relative;
-        }}
-        .slowbro-pill .sb-text::after {{
-            content: "working on caffeine";
-            visibility: visible;
-            position: absolute;
-            left: 0;
-            white-space: nowrap;
-        }}
-        .slowbro-pill .sb-dots::after {{
-            animation: typing-dots 2s infinite steps(4);
+        [data-testid="stHeader"]::after {{
+            content: "working on caffeine..." !important;
         }}
         </style>
         <div class="slowbro-waiting">
@@ -1282,6 +1271,11 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         _waiting_placeholder.empty()
         st.session_state["_estimation_running"] = False
         st.error(f"Estimation failed: {exc}")
+        try:
+            from community_db import log_activity
+            log_activity(st.session_state.get("username", "anonymous"), "estimation_error", f"model={model_type}, error={str(exc)[:200]}")
+        except Exception:
+            pass
         st.exception(exc)
         st.stop()
 
@@ -1320,6 +1314,11 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         }
 
     st.success(f"Model **{run_label}** estimated successfully.")
+    try:
+        from community_db import log_activity
+        log_activity(st.session_state.get("username", "anonymous"), "estimation_success", f"model={model_type}, label={run_label}, LL={estimation.log_likelihood:.2f}, AIC={estimation.aic:.2f}, runtime={estimation.runtime_seconds:.1f}s")
+    except Exception:
+        pass
 
     # Show results with appropriate display
     if model_type == "latent_class":
@@ -1347,6 +1346,12 @@ if model_type == "latent_class":
 
     if st.button("Run BIC comparison (Q = 2..5)", use_container_width=True):
         import plotly.express as px
+
+        try:
+            from community_db import log_activity
+            log_activity(st.session_state.get("username", "anonymous"), "bic_comparison", "Q_range=2-5")
+        except Exception:
+            pass
 
         st.session_state["_estimation_running"] = True
         bic_variables = []
