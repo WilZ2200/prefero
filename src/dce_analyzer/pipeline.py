@@ -36,6 +36,8 @@ def estimate_dataframe(
     correlation_groups: list[list[int]] | None = None,
     bws_worst_col: str | None = None,
     estimate_lambda_w: bool = True,
+    lc_method: str = "em",
+    custom_start: list[float] | None = None,
 ) -> PipelineResult:
     tensors = prepare_choice_tensors(df, spec, device=device)
 
@@ -66,7 +68,10 @@ def estimate_dataframe(
             correlation_groups=correlation_groups,
             bws_data=bws_data,
         )
-        return PipelineResult(tensors=tensors, estimation=estimator.fit(maxiter=maxiter))
+        return PipelineResult(
+            tensors=tensors,
+            estimation=estimator.fit(maxiter=maxiter, initial_theta=custom_start),
+        )
     elif model_type == "conditional":
         estimator = ConditionalLogitEstimator(
             tensors=tensors,
@@ -75,7 +80,10 @@ def estimate_dataframe(
             seed=seed,
             bws_data=bws_data,
         )
-        return PipelineResult(tensors=tensors, estimation=estimator.fit(maxiter=maxiter))
+        return PipelineResult(
+            tensors=tensors,
+            estimation=estimator.fit(maxiter=maxiter, initial_theta=custom_start),
+        )
     elif model_type == "gmnl":
         estimator = GmnlEstimator(
             tensors=tensors,
@@ -87,7 +95,10 @@ def estimate_dataframe(
             correlated=correlated,
             correlation_groups=correlation_groups,
         )
-        return PipelineResult(tensors=tensors, estimation=estimator.fit(maxiter=maxiter))
+        return PipelineResult(
+            tensors=tensors,
+            estimation=estimator.fit(maxiter=maxiter, initial_theta=custom_start),
+        )
     elif model_type == "latent_class":
         q = n_classes if n_classes is not None else spec.n_classes
         mc = membership_cols or spec.membership_cols
@@ -104,7 +115,10 @@ def estimate_dataframe(
         )
         return PipelineResult(
             tensors=tensors,
-            estimation=lc_estimator.fit(maxiter=maxiter, n_starts=n_starts),
+            estimation=lc_estimator.fit(
+                maxiter=maxiter, n_starts=n_starts, method=lc_method,
+                initial_theta=custom_start,
+            ),
         )
     else:
         raise ValueError(
@@ -197,6 +211,8 @@ def estimate_from_spec(
         correlation_groups=spec.correlation_groups,
         bws_worst_col=spec.bws_worst_col,
         estimate_lambda_w=spec.estimate_lambda_w,
+        lc_method=spec.lc_method,
+        custom_start=spec.custom_start,
     )
     result.expanded_spec = model_spec
     result.expanded_df = df

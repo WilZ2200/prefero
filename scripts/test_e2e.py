@@ -1224,6 +1224,216 @@ _run("31. Attribute × attribute interaction (price × time)", test_attribute_x_
 
 
 # ===================================================================
+# 32. Custom attribute names in simulation
+# ===================================================================
+def test_custom_attribute_names():
+    from dce_analyzer.simulate import generate_simulated_dce
+
+    output = generate_simulated_dce(
+        n_individuals=50, n_tasks=4, n_alts=3, seed=123,
+        attribute_names=["cost", "quality", "speed"],
+    )
+    df = output.data
+    for col in ["cost", "quality", "speed"]:
+        assert col in df.columns, f"Missing custom attribute column: {col}"
+    # true_params should reference custom names
+    for attr in ["cost", "quality", "speed"]:
+        assert f"mu_{attr}" in output.true_parameters, f"Missing mu_{attr} in true_params"
+        assert f"sd_{attr}" in output.true_parameters, f"Missing sd_{attr} in true_params"
+    # Default attributes should NOT be present
+    for col in ["price", "time", "comfort", "reliability"]:
+        assert col not in df.columns, f"Default attribute '{col}' should not be present"
+
+
+_run("32. Custom attribute names in simulation", test_custom_attribute_names)
+
+
+# ===================================================================
+# 33. Custom covariate names in simulation
+# ===================================================================
+def test_custom_covariate_names():
+    from dce_analyzer.simulate import generate_simulated_dce
+
+    output = generate_simulated_dce(
+        n_individuals=50, n_tasks=4, n_alts=3, seed=123,
+        covariate_names=["education", "gender"],
+    )
+    df = output.data
+    for col in ["education", "gender"]:
+        assert col in df.columns, f"Missing custom covariate column: {col}"
+    # Covariates should be constant within each respondent
+    for (rid,), grp in df.groupby(["respondent_id"]):
+        for col in ["education", "gender"]:
+            assert grp[col].nunique() == 1, (
+                f"Covariate '{col}' not constant for respondent {rid}"
+            )
+    # Default covariates should NOT be present
+    for col in ["income", "age"]:
+        assert col not in df.columns, f"Default covariate '{col}' should not be present"
+
+
+_run("33. Custom covariate names in simulation", test_custom_covariate_names)
+
+
+# ===================================================================
+# 34. BWS simulation (worst column)
+# ===================================================================
+def test_bws_simulation():
+    from dce_analyzer.simulate import generate_simulated_dce
+
+    output = generate_simulated_dce(
+        n_individuals=50, n_tasks=4, n_alts=3, seed=42, bws=True,
+    )
+    df = output.data
+    assert "worst" in df.columns, "Missing 'worst' column"
+    # Each task should have exactly 1 worst
+    for (rid, tid), grp in df.groupby(["respondent_id", "task_id"]):
+        assert grp["worst"].sum() == 1, f"Task ({rid},{tid}) should have exactly 1 worst"
+        assert grp["choice"].sum() == 1, f"Task ({rid},{tid}) should have exactly 1 best"
+        best_alt = grp.loc[grp["choice"] == 1, "alternative"].values[0]
+        worst_alt = grp.loc[grp["worst"] == 1, "alternative"].values[0]
+        assert best_alt != worst_alt, f"Task ({rid},{tid}): worst must differ from best"
+
+
+_run("34. BWS simulation (worst column)", test_bws_simulation)
+
+
+# ===================================================================
+# 35. BWS simulation with n_alts=2 raises ValueError
+# ===================================================================
+def test_bws_n_alts_2_raises():
+    from dce_analyzer.simulate import generate_simulated_dce
+
+    try:
+        generate_simulated_dce(n_individuals=10, n_tasks=2, n_alts=2, seed=1, bws=True)
+        raise AssertionError("Should have raised ValueError for bws with n_alts=2")
+    except ValueError as exc:
+        assert "n_alts >= 3" in str(exc), f"Unexpected error message: {exc}"
+
+
+_run("35. BWS simulation with n_alts=2 raises ValueError", test_bws_n_alts_2_raises)
+
+
+# ===================================================================
+# 36. Default params backward compat (no new args)
+# ===================================================================
+def test_default_params_backward_compat():
+    from dce_analyzer.simulate import generate_simulated_dce
+
+    output = generate_simulated_dce(n_individuals=50, n_tasks=4, n_alts=3, seed=42)
+    df = output.data
+    # Same columns as original test 2
+    for col in ["respondent_id", "task_id", "alternative", "choice",
+                "price", "time", "comfort", "reliability", "income", "age"]:
+        assert col in df.columns, f"Missing column: {col}"
+    assert "worst" not in df.columns, "'worst' column should not be present by default"
+    assert len(df) == 50 * 4 * 3
+    # true_params should contain the hardcoded keys
+    for key in ["mu_price", "sd_price", "mu_time", "sd_time",
+                "mu_comfort", "sd_comfort", "beta_reliability"]:
+        assert key in output.true_parameters, f"Missing true_param key: {key}"
+
+
+_run("36. Default params backward compat (no new args)", test_default_params_backward_compat)
+
+
+# ===================================================================
+# 37. Bootstrap with Mixed Logit
+# ===================================================================
+def test_bootstrap_mixed_logit():
+    from dce_analyzer.config import ModelSpec, VariableSpec
+    from dce_analyzer.bootstrap import run_bootstrap
+
+    spec = ModelSpec(
+        id_col="respondent_id",
+        task_col="task_id",
+        alt_col="alternative",
+        choice_col="choice",
+        variables=[
+            VariableSpec(name="price", column="price", distribution="normal"),
+            VariableSpec(name="time", column="time", distribution="normal"),
+            VariableSpec(name="comfort", column="comfort", distribution="fixed"),
+            VariableSpec(name="reliability", column="reliability", distribution="fixed"),
+        ],
+        n_draws=50,
+    )
+    boot = run_bootstrap(
+        df=sim_output.data, spec=spec, model_type="mixed",
+        n_replications=5, maxiter=100, seed=42,
+    )
+    assert boot.n_replications == 5
+    assert boot.n_successful >= 2, f"Only {boot.n_successful} succeeded"
+    # 2 normal (mu+sd each) + 2 fixed = 6 params
+    assert len(boot.param_names) == 6, f"Expected 6 params, got {len(boot.param_names)}"
+    assert boot.estimates_matrix.shape == (boot.n_successful, 6)
+    summary = boot.summary_dataframe()
+    assert isinstance(summary, pd.DataFrame)
+    assert len(summary) == 6
+    # Check that bootstrap SE is computed for all parameters
+    for name in boot.param_names:
+        se = boot.bootstrap_se[name]
+        assert se >= 0, f"Bootstrap SE negative for {name}"
+        assert np.isfinite(se), f"Bootstrap SE not finite for {name}"
+
+
+_run("37. Bootstrap with Mixed Logit", test_bootstrap_mixed_logit)
+
+
+# ===================================================================
+# 38. Latent Class with EM algorithm
+# ===================================================================
+def test_lc_em():
+    from dce_analyzer.config import ModelSpec, VariableSpec
+    from dce_analyzer.pipeline import estimate_dataframe
+
+    spec = ModelSpec(
+        id_col="respondent_id",
+        task_col="task_id",
+        alt_col="alternative",
+        choice_col="choice",
+        variables=[
+            VariableSpec(name="price", column="price"),
+            VariableSpec(name="time", column="time"),
+            VariableSpec(name="comfort", column="comfort"),
+            VariableSpec(name="reliability", column="reliability"),
+        ],
+        n_classes=2,
+    )
+    result = estimate_dataframe(
+        df=sim_output.data, spec=spec, model_type="latent_class",
+        maxiter=200, seed=42, n_classes=2, n_starts=3, lc_method="em",
+    )
+    est = result.estimation
+    assert est.n_classes == 2
+    assert len(est.class_probabilities) == 2
+    assert abs(sum(est.class_probabilities) - 1.0) < 1e-4, "Class probs must sum to 1"
+    assert not est.estimates.empty
+    assert not est.class_estimates.empty
+    assert not est.posterior_probs.empty
+    assert est.posterior_probs.shape[1] == 2
+
+    # EM-specific fields
+    assert est.optimizer_method == "EM"
+    assert est.em_iterations > 0, "EM should run at least 1 iteration"
+    assert len(est.em_ll_history) == est.em_iterations
+    assert isinstance(est.em_converged, bool)
+    # LL should be monotonically non-decreasing (EM guarantee)
+    for i in range(1, len(est.em_ll_history)):
+        assert est.em_ll_history[i] >= est.em_ll_history[i - 1] - 1e-6, (
+            f"EM LL decreased at iter {i}: {est.em_ll_history[i-1]:.6f} -> {est.em_ll_history[i]:.6f}"
+        )
+
+    # summary_dict should include EM fields
+    sd = est.summary_dict()
+    assert "em_iterations" in sd
+    assert "em_ll_history" in sd
+    assert "em_converged" in sd
+
+
+_run("38. Latent Class with EM algorithm", test_lc_em)
+
+
+# ===================================================================
 # Summary
 # ===================================================================
 print()

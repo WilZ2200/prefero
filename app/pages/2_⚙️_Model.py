@@ -27,7 +27,7 @@ from dce_analyzer.config import (  # noqa: E402
 )
 from dce_analyzer.data import get_device_info  # noqa: E402
 from dce_analyzer.pipeline import estimate_from_spec  # noqa: E402
-from utils import init_session_state, require_data, sidebar_branding  # noqa: E402
+from utils import init_session_state, require_data, sidebar_branding, slowbro_next_step  # noqa: E402
 
 
 def _connected_components(pairs: list[tuple[int, int]], n: int) -> list[list[int]]:
@@ -158,6 +158,11 @@ if bws_mode:
 # ── 2  Variable selection and coding ──────────────────────────────
 st.divider()
 st.subheader("2. Utility variables")
+st.markdown(
+    "Select the **attributes that enter the utility function**. "
+    "Each selected attribute will receive its own coefficient (beta) to be estimated. "
+    "Structural columns (ID, task, alternative, choice) are excluded automatically."
+)
 
 # Allow selecting any numeric column (DCE attributes are typically numeric-coded)
 structural_cols = {id_col, task_col, alt_col, choice_col}
@@ -310,9 +315,11 @@ if model_type == "conditional":
         "All coefficients are fixed across respondents. "
         "Fast to estimate, good baseline model."
     )
-    s1, s2 = st.columns(2)
-    maxiter = s1.slider("Max optimizer iterations", 20, 500, 200, step=10, key="cl_maxiter")
-    est_seed = s2.number_input("Estimation seed", min_value=1, value=123, step=1, key="cl_seed")
+    maxiter = 2000
+    est_seed = st.number_input(
+        "Estimation seed", min_value=1, value=123, step=1, key="cl_seed",
+        help="Random seed ensures replicability — it has no real meaning. Pick your lucky number!",
+    )
     for col in expanded_feature_cols:
         dist_map[col] = "fixed"
     n_draws = 1
@@ -352,10 +359,13 @@ elif model_type == "gmnl":
                 dist_map[col] = dist_val
 
     st.markdown("**Estimation settings**")
-    gs1, gs2, gs3 = st.columns(3)
+    maxiter = 2000
+    gs1, gs2 = st.columns(2)
     n_draws = gs1.slider("Halton draws", 20, 2000, 200, step=10, key="gmnl_draws")
-    maxiter = gs2.slider("Max optimizer iterations", 20, 500, 200, step=10, key="gmnl_maxiter")
-    est_seed = gs3.number_input("Estimation seed", min_value=1, value=123, step=1, key="gmnl_seed")
+    est_seed = gs2.number_input(
+        "Estimation seed", min_value=1, value=123, step=1, key="gmnl_seed",
+        help="Random seed ensures replicability — it has no real meaning. Pick your lucky number!",
+    )
 
     with st.expander("About GMNL scale parameters"):
         st.markdown(
@@ -449,10 +459,13 @@ elif model_type == "mixed":
                 dist_map[col] = dist_val
 
     st.markdown("**Estimation settings**")
-    ms1, ms2, ms3 = st.columns(3)
+    maxiter = 2000
+    ms1, ms2 = st.columns(2)
     n_draws = ms1.slider("Halton draws", 20, 2000, 200, step=10, key="mxl_draws")
-    maxiter = ms2.slider("Max optimizer iterations", 20, 500, 200, step=10, key="mxl_maxiter")
-    est_seed = ms3.number_input("Estimation seed", min_value=1, value=123, step=1, key="mxl_seed")
+    est_seed = ms2.number_input(
+        "Estimation seed", min_value=1, value=123, step=1, key="mxl_seed",
+        help="Random seed ensures replicability — it has no real meaning. Pick your lucky number!",
+    )
 
     # ── Correlation structure: Independent / Full / Selective ────────
     _random_expanded = [c for c in expanded_feature_cols if dist_map.get(c, "fixed") != "fixed"]
@@ -507,11 +520,25 @@ else:  # latent_class
         "Assumes Q discrete segments of respondents, each with distinct "
         "fixed preferences. Useful for market segmentation."
     )
-    ls1, ls2, ls3, ls4 = st.columns(4)
+    maxiter = 300  # EM converges in 50-200 iters; 300 is a safe cap
+    ls1, ls2, ls3 = st.columns(3)
     n_classes = ls1.slider("Number of classes (Q)", 2, 5, 2, key="lc_classes")
     n_starts = ls2.slider("Random starts", 5, 20, 10, key="lc_starts")
-    maxiter = ls3.slider("Max optimizer iterations", 20, 500, 200, step=10, key="lc_maxiter")
-    est_seed = ls4.number_input("Estimation seed", min_value=1, value=123, step=1, key="lc_seed")
+    est_seed = ls3.number_input(
+        "Estimation seed", min_value=1, value=123, step=1, key="lc_seed",
+        help="Random seed ensures replicability — it has no real meaning. Pick your lucky number!",
+    )
+
+    lc_method_label = st.radio(
+        "Estimation method",
+        ["EM (Recommended)", "Direct (L-BFGS-B)"],
+        horizontal=True,
+        key="lc_method_radio",
+        help="EM: Expectation-Maximization algorithm — standard for latent class models, "
+             "monotonic LL increase, generally more robust. "
+             "Direct: Full L-BFGS-B optimization of the joint log-likelihood.",
+    )
+    lc_method = "em" if lc_method_label.startswith("EM") else "direct"
 
     # Membership covariates: columns constant within each respondent
     st.markdown("**Membership variables (demographics)**")
@@ -552,6 +579,7 @@ if model_type not in ("mixed", "gmnl"):
     mxl_correlation_groups = None
 if model_type != "latent_class":
     lc_membership_cols = []
+    lc_method = "em"
 
 # ── Interaction terms (N-way, any columns) — all models ──────────
 st.divider()
@@ -623,8 +651,20 @@ if history:
     st.sidebar.divider()
     st.sidebar.metric("Saved models", len(history))
     st.sidebar.markdown("**Model history**")
-    for entry in history:
-        st.sidebar.caption(f"- {entry.get('label', 'model')}")
+    _sidebar_delete_idx: int | None = None
+    for _si, entry in enumerate(history):
+        _sb_label, _sb_del = st.sidebar.columns([5, 1])
+        with _sb_label:
+            st.caption(f"{entry.get('label', 'model')}")
+        with _sb_del:
+            if st.button("✕", key=f"sidebar_del_{_si}", help="Delete this model"):
+                _sidebar_delete_idx = _si
+    if _sidebar_delete_idx is not None:
+        _deleted = st.session_state.model_history.pop(_sidebar_delete_idx)
+        _cur = st.session_state.model_results
+        if _cur is not None and _cur.get("label") == _deleted.get("label"):
+            st.session_state.model_results = None
+        st.rerun()
 
 
 # ── helpers for result display ────────────────────────────────────
@@ -650,12 +690,17 @@ def _show_results(estimation, run_label: str, header_suffix: str = "") -> None:
         st.warning(f"Did not converge: {estimation.message}")
 
     st.markdown(f"#### Model fit{header_suffix}")
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Log-Likelihood", f"{estimation.log_likelihood:,.3f}")
     m2.metric("AIC", f"{estimation.aic:,.2f}")
     m3.metric("BIC", f"{estimation.bic:,.2f}")
-    m4.metric("Iterations", f"{estimation.optimizer_iterations}")
-    m5.metric("Runtime (s)", f"{estimation.runtime_seconds:.2f}")
+    m4.metric(
+        "Runtime (s)", f"{estimation.runtime_seconds:.2f}",
+        help="This is the time Slowbro spent on core estimation (number crunching). "
+             "Slowbro also handles other chores — data preparation, parameter expansion, "
+             "post-processing, and standard error computation — so the actual wall-clock "
+             "time you experienced is slightly longer.",
+    )
 
     st.markdown(f"#### Parameter estimates{header_suffix}")
     display_df = estimation.estimates.copy()
@@ -706,12 +751,89 @@ def _show_lc_results(estimation, run_label: str) -> None:
 
     # Fit metrics
     st.markdown("#### Model fit")
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Log-Likelihood", f"{estimation.log_likelihood:,.3f}")
     m2.metric("AIC", f"{estimation.aic:,.2f}")
     m3.metric("BIC", f"{estimation.bic:,.2f}")
-    m4.metric("Iterations", f"{estimation.optimizer_iterations}")
-    m5.metric("Runtime (s)", f"{estimation.runtime_seconds:.2f}")
+    m4.metric(
+        "Runtime (s)", f"{estimation.runtime_seconds:.2f}",
+        help="This is the time Slowbro spent on core estimation (number crunching). "
+             "Slowbro also handles other chores — data preparation, parameter expansion, "
+             "post-processing, and standard error computation — so the actual wall-clock "
+             "time you experienced is slightly longer.",
+    )
+
+    # Convergence diagnostics
+    n_attempted = getattr(estimation, "n_starts_attempted", 0)
+    n_succeeded = getattr(estimation, "n_starts_succeeded", 0)
+    all_lls = getattr(estimation, "all_start_lls", [])
+    best_idx = getattr(estimation, "best_start_index", -1)
+    opt_method = getattr(estimation, "optimizer_method", "L-BFGS-B")
+
+    if n_attempted > 0:
+        with st.expander("Convergence diagnostics"):
+            st.markdown(f"**Optimizer:** {opt_method}")
+            c_d1, c_d2, c_d3 = st.columns(3)
+            c_d1.metric("Random starts attempted", n_attempted)
+            c_d2.metric("Starts succeeded", n_succeeded)
+            c_d3.metric("Best start index", best_idx + 1 if best_idx >= 0 else "N/A")
+
+            # EM-specific diagnostics
+            em_iters = getattr(estimation, "em_iterations", 0)
+            em_history = getattr(estimation, "em_ll_history", [])
+            em_conv = getattr(estimation, "em_converged", False)
+
+            if em_iters > 0:
+                e_d1, e_d2 = st.columns(2)
+                e_d1.metric("EM iterations (best start)", em_iters)
+                e_d2.metric("EM converged", "Yes" if em_conv else "No")
+
+                if len(em_history) > 1:
+                    em_df = pd.DataFrame({
+                        "Iteration": list(range(1, len(em_history) + 1)),
+                        "Log-Likelihood": em_history,
+                    })
+                    fig_em = px.line(
+                        em_df, x="Iteration", y="Log-Likelihood",
+                        title="EM Convergence (best start)",
+                        markers=True,
+                    )
+                    st.plotly_chart(fig_em, use_container_width=True)
+
+            valid_lls = [ll for ll in all_lls if not (isinstance(ll, float) and ll != ll)]
+            if len(valid_lls) > 1:
+                ll_range = max(valid_lls) - min(valid_lls)
+                st.markdown(
+                    f"**LL range across starts:** {min(valid_lls):.3f} to "
+                    f"{max(valid_lls):.3f} (spread: {ll_range:.3f})"
+                )
+                if ll_range > 1.0:
+                    st.caption(
+                        "A large spread in LL values across starts suggests "
+                        "multiple local optima. Consider increasing random starts."
+                    )
+                else:
+                    st.caption(
+                        "LL values are close across starts, suggesting a "
+                        "well-identified global optimum."
+                    )
+
+                ll_df = pd.DataFrame({
+                    "Start": list(range(1, len(all_lls) + 1)),
+                    "Log-Likelihood": all_lls,
+                })
+                fig_ll = px.bar(
+                    ll_df.dropna(subset=["Log-Likelihood"]),
+                    x="Start", y="Log-Likelihood",
+                    title="Log-Likelihood by Random Start",
+                )
+                if best_idx >= 0:
+                    fig_ll.add_hline(
+                        y=estimation.log_likelihood,
+                        line_dash="dash", line_color="green",
+                        annotation_text="Best",
+                    )
+                st.plotly_chart(fig_ll, use_container_width=True)
 
     # Class membership probabilities
     st.markdown("#### Class membership probabilities")
@@ -812,6 +934,218 @@ def _show_lc_results(estimation, run_label: str) -> None:
 st.divider()
 st.subheader("4. Run estimation")
 
+# ── Auto-suggest a descriptive model name ──────────────────────
+def _suggest_model_name() -> str:
+    """Build a descriptive default name from the current model configuration."""
+    prefix_map = {"conditional": "CL", "mixed": "MXL", "gmnl": "GMNL", "latent_class": "LC"}
+    prefix = prefix_map[model_type]
+    parts: list[str] = [prefix]
+
+    if model_type in ("mixed", "gmnl"):
+        # Summarise distribution counts: e.g. "2N+1F" for 2 normal + 1 fixed
+        dist_counts: dict[str, int] = {}
+        for _c in expanded_feature_cols:
+            d = dist_map.get(_c, "fixed")
+            abbr = {"fixed": "F", "normal": "N", "lognormal": "LN"}.get(d, d[0].upper())
+            dist_counts[abbr] = dist_counts.get(abbr, 0) + 1
+        dist_summary = "+".join(f"{v}{k}" for k, v in dist_counts.items())
+        if dist_summary:
+            parts.append(dist_summary)
+
+        # Correlation structure
+        if mxl_correlated:
+            if mxl_correlation_groups:
+                parts.append("sel-corr")
+            else:
+                parts.append("full-corr")
+        else:
+            parts.append("indep")
+
+    elif model_type == "latent_class":
+        parts.append(f"Q={n_classes}")
+        parts.append(f"{len(expanded_feature_cols)}vars")
+
+    elif model_type == "conditional":
+        parts.append(f"{len(expanded_feature_cols)}vars")
+
+    # BWS flag
+    if bws_mode:
+        parts.append("+BWS")
+
+    # Interaction count
+    if _het_interactions:
+        parts.append(f"+{len(_het_interactions)}int")
+
+    return " ".join(parts)
+
+_suggested_name = _suggest_model_name()
+# Auto-update model name when specification changes
+if st.session_state.get("_prev_suggested_name") != _suggested_name:
+    st.session_state.model_run_name = _suggested_name
+    st.session_state._prev_suggested_name = _suggested_name
+
+run_name = st.text_input(
+    "Model name",
+    key="model_run_name",
+    help="A descriptive name for this model run. Auto-suggested based on your settings; feel free to edit.",
+)
+
+# ── Custom starting values (all model types) ─────────────────────
+
+def _build_param_names() -> list[dict[str, str]]:
+    """Build the parameter name list for the current model configuration.
+
+    Returns a list of dicts with 'index', 'parameter', 'description'.
+    """
+    rows: list[dict[str, str]] = []
+    idx = 0
+
+    if model_type == "conditional":
+        for col in expanded_feature_cols:
+            rows.append({"#": str(idx), "Parameter": f"beta_{col}",
+                         "Description": f"Coefficient for {col}"})
+            idx += 1
+
+    elif model_type in ("mixed", "gmnl"):
+        # Mean parameters
+        for col in expanded_feature_cols:
+            d = dist_map.get(col, "fixed")
+            if d == "fixed":
+                rows.append({"#": str(idx), "Parameter": f"mu_{col}",
+                             "Description": f"Fixed coefficient for {col}"})
+                idx += 1
+            else:
+                rows.append({"#": str(idx), "Parameter": f"mu_{col}",
+                             "Description": f"Mean of {d} coefficient for {col}"})
+                idx += 1
+
+        # SD / Cholesky parameters
+        _random_cols = [c for c in expanded_feature_cols if dist_map.get(c, "fixed") != "fixed"]
+        if mxl_correlated and len(_random_cols) >= 2:
+            # Cholesky lower-triangular elements
+            if mxl_correlation_groups:
+                # Selective: block-diagonal Cholesky
+                for group in mxl_correlation_groups:
+                    g_names = [_random_cols[i] for i in group if i < len(_random_cols)]
+                    for i, ni in enumerate(g_names):
+                        for j in range(i + 1):
+                            nj = g_names[j]
+                            if i == j:
+                                rows.append({"#": str(idx), "Parameter": f"L[{ni},{nj}]",
+                                             "Description": f"Cholesky diagonal: SD of {ni} (raw, softplus-transformed)"})
+                            else:
+                                rows.append({"#": str(idx), "Parameter": f"L[{ni},{nj}]",
+                                             "Description": f"Cholesky off-diag: covariance {ni}-{nj}"})
+                            idx += 1
+                # Standalone random params (not in any group)
+                _grouped_indices = {i for g in mxl_correlation_groups for i in g}
+                for ri, col in enumerate(_random_cols):
+                    if ri not in _grouped_indices:
+                        rows.append({"#": str(idx), "Parameter": f"sd_{col}",
+                                     "Description": f"SD of {col} (raw, softplus-transformed)"})
+                        idx += 1
+            else:
+                # Full correlation: one Cholesky block for all random vars
+                for i, ni in enumerate(_random_cols):
+                    for j in range(i + 1):
+                        nj = _random_cols[j]
+                        if i == j:
+                            rows.append({"#": str(idx), "Parameter": f"L[{ni},{nj}]",
+                                         "Description": f"Cholesky diagonal: SD of {ni} (raw, softplus-transformed)"})
+                        else:
+                            rows.append({"#": str(idx), "Parameter": f"L[{ni},{nj}]",
+                                         "Description": f"Cholesky off-diag: covariance {ni}-{nj}"})
+                        idx += 1
+        else:
+            # Independent: one SD per random var
+            for col in _random_cols:
+                d = dist_map.get(col, "fixed")
+                rows.append({"#": str(idx), "Parameter": f"sd_{col}",
+                             "Description": f"SD of {d} coefficient for {col} (raw, softplus-transformed)"})
+                idx += 1
+
+        if model_type == "gmnl":
+            rows.append({"#": str(idx), "Parameter": "tau",
+                         "Description": "Scale mean (0 = unit scale)"})
+            idx += 1
+            rows.append({"#": str(idx), "Parameter": "raw_sigma_tau",
+                         "Description": "Scale SD (raw, softplus-transformed)"})
+            idx += 1
+            rows.append({"#": str(idx), "Parameter": "raw_gamma",
+                         "Description": "Mixing parameter (raw, sigmoid -> [0,1])"})
+            idx += 1
+
+    elif model_type == "latent_class":
+        for q in range(1, n_classes + 1):
+            for col in expanded_feature_cols:
+                rows.append({"#": str(idx), "Parameter": f"beta_{col}_class{q}",
+                             "Description": f"Coefficient for {col} in class {q}"})
+                idx += 1
+        if n_classes > 1:
+            if lc_membership_cols:
+                for q in range(2, n_classes + 1):
+                    rows.append({"#": str(idx), "Parameter": f"gamma_class{q}",
+                                 "Description": f"Intercept for class {q} membership (vs class 1)"})
+                    idx += 1
+                    for mc in lc_membership_cols:
+                        rows.append({"#": str(idx), "Parameter": f"delta_{mc}_class{q}",
+                                     "Description": f"Effect of {mc} on class {q} membership"})
+                        idx += 1
+            else:
+                for q in range(2, n_classes + 1):
+                    rows.append({"#": str(idx), "Parameter": f"gamma_class{q}",
+                                 "Description": f"Log-odds of class {q} vs class 1"})
+                    idx += 1
+
+    # BWS lambda_w (appended last for all model types)
+    if bws_mode and bws_estimate_lambda_w:
+        rows.append({"#": str(idx), "Parameter": "raw_lambda_w",
+                     "Description": "Worst-choice scale (raw, softplus-transformed)"})
+        idx += 1
+
+    return rows
+
+
+_param_info = _build_param_names()
+
+with st.expander("Custom starting values (advanced)"):
+    st.caption(
+        "Optionally provide your own initial parameter vector (theta_0). "
+        "Fill in the **Starting value** column below — leave blank for default initialization. "
+        "For Latent Class, this replaces the first random start; remaining starts are still random."
+    )
+    st.markdown(f"**Total parameters:** {len(_param_info)}")
+
+    _start_df = pd.DataFrame({
+        "#": [r["#"] for r in _param_info],
+        "Parameter": [r["Parameter"] for r in _param_info],
+        "Description": [r["Description"] for r in _param_info],
+        "Starting value": [None] * len(_param_info),
+    })
+
+    _edited_start = st.data_editor(
+        _start_df,
+        use_container_width=True,
+        hide_index=True,
+        disabled=["#", "Parameter", "Description"],
+        column_config={
+            "#": st.column_config.TextColumn(width="small"),
+            "Parameter": st.column_config.TextColumn(width="medium"),
+            "Description": st.column_config.TextColumn(width="large"),
+            "Starting value": st.column_config.NumberColumn(
+                format="%.6f",
+                help="Enter your initial guess for this parameter. Leave blank for default.",
+            ),
+        },
+        key="custom_start_editor",
+    )
+
+    st.caption(
+        "**Note:** Parameters marked *(raw, softplus-transformed)* are on an internal scale. "
+        "For example, softplus(0) ≈ 0.69, softplus(-1) ≈ 0.31. The final reported value "
+        "is the transformed (positive) quantity."
+    )
+
 if st.button("Run Estimation", type="primary", use_container_width=True):
     # Build VariableSpec list from original feature columns.
     # For dummy-coded variables, use the original column name as a placeholder;
@@ -829,6 +1163,19 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
             dist = dist_map.get(col, "fixed")
             variables.append(VariableSpec(name=col, column=col, distribution=dist))
 
+    # Parse custom starting values from the data_editor
+    _parsed_custom_start: list[float] | None = None
+    _sv_col = _edited_start["Starting value"]
+    if _sv_col.notna().any():
+        if _sv_col.notna().all():
+            _parsed_custom_start = _sv_col.tolist()
+        else:
+            st.error(
+                "Custom starting values must be provided for **all** parameters or **none**. "
+                f"You filled {_sv_col.notna().sum()} of {len(_sv_col)} values."
+            )
+            st.stop()
+
     # Build FullModelSpec — one object captures everything
     full_spec = FullModelSpec(
         id_col=id_col,
@@ -845,39 +1192,106 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         estimate_lambda_w=bws_estimate_lambda_w if bws_mode else True,
         n_classes=int(n_classes),
         membership_cols=lc_membership_cols if lc_membership_cols else None,
+        lc_method=lc_method if model_type == "latent_class" else "em",
         n_draws=int(n_draws),
         maxiter=int(maxiter),
         seed=int(est_seed),
         n_starts=int(n_starts),
+        custom_start=_parsed_custom_start,
     )
 
     # Pass the original DataFrame; backend handles dummy expansion
     est_df = df
 
-    # Build spinner message
-    if model_type == "latent_class":
-        spinner_msg = f"Estimating {n_classes}-class model with {n_starts} random starts..."
-    else:
-        spinner_msg = "Estimating model — this may take a minute..."
+    # ── Slowbro waiting UI ──────────────────────────────────────
+    import random as _rng
+    from trivia import TRIVIA_FACTS
 
-    with st.spinner(spinner_msg):
-        try:
-            result = estimate_from_spec(df=est_df, spec=full_spec)
-        except Exception as exc:
-            st.error(f"Estimation failed: {exc}")
-            st.exception(exc)
-            st.stop()
+    _facts = TRIVIA_FACTS.copy()
+    _rng.shuffle(_facts)
+    _display_facts = _facts[:25]  # show 25 facts in rotation
+
+    _trivia_items = "".join(
+        f'<div class="trivia-item">{fact}</div>' for fact in _display_facts
+    )
+
+    _waiting_placeholder = st.empty()
+    _waiting_placeholder.markdown(
+        f'''
+        <style>
+        .slowbro-waiting {{
+            margin: 16px 0;
+            max-width: 520px;
+        }}
+        .trivia-box {{
+            height: 44px;
+            overflow: hidden;
+            border-left: 3px solid #4CAF50;
+            padding-left: 12px;
+            position: relative;
+        }}
+        .trivia-roll {{
+            animation: roll-up {len(_display_facts) * 8}s linear infinite;
+        }}
+        @keyframes roll-up {{
+            0%   {{ transform: translateY(0); }}
+            100% {{ transform: translateY(-50%); }}
+        }}
+        .trivia-item {{
+            height: 44px;
+            display: flex;
+            align-items: center;
+            font-size: 0.82rem;
+            color: #999;
+            line-height: 1.3;
+        }}
+        /* Switch top-right Slowbro to working state */
+        .slowbro-pill .sb-text {{
+            visibility: hidden;
+            position: relative;
+        }}
+        .slowbro-pill .sb-text::after {{
+            content: "working on caffeine";
+            visibility: visible;
+            position: absolute;
+            left: 0;
+            white-space: nowrap;
+        }}
+        .slowbro-pill .sb-dots::after {{
+            animation: typing-dots 2s infinite steps(4);
+        }}
+        </style>
+        <div class="slowbro-waiting">
+            <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">Slowbro is working...</div>
+            <div class="trivia-box">
+                <div class="trivia-roll">
+                    {_trivia_items}
+                    {_trivia_items}
+                </div>
+            </div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+    # ── Run estimation (no st.spinner) ──────────────────────
+    st.session_state["_estimation_running"] = True
+    try:
+        result = estimate_from_spec(df=est_df, spec=full_spec)
+    except Exception as exc:
+        _waiting_placeholder.empty()
+        st.session_state["_estimation_running"] = False
+        st.error(f"Estimation failed: {exc}")
+        st.exception(exc)
+        st.stop()
+
+    st.session_state["_estimation_running"] = False
+    _waiting_placeholder.empty()
 
     estimation = result.estimation
 
-    # Auto-generate run label
-    prefix_map = {"conditional": "CL", "mixed": "MXL", "gmnl": "GMNL", "latent_class": "LC"}
-    prefix = prefix_map[model_type]
-    existing_count = sum(1 for h in history if h.get("model_type") == model_type)
-    if model_type == "latent_class":
-        run_label = f"{prefix} Run {existing_count + 1} (Q={n_classes})"
-    else:
-        run_label = f"{prefix} Run {existing_count + 1}"
+    # Use the user-provided model name (or the auto-suggested default)
+    run_label = run_name.strip() if run_name.strip() else _suggested_name
 
     # Store as current result (use expanded spec/df for Results page compatibility)
     st.session_state.model_results = {
@@ -934,6 +1348,7 @@ if model_type == "latent_class":
     if st.button("Run BIC comparison (Q = 2..5)", use_container_width=True):
         import plotly.express as px
 
+        st.session_state["_estimation_running"] = True
         bic_variables = []
         for col in feature_cols:
             bic_variables.append(VariableSpec(name=col, column=col, distribution="fixed"))
@@ -953,6 +1368,7 @@ if model_type == "latent_class":
                 n_classes=q, n_starts=int(n_starts),
                 maxiter=int(maxiter), seed=int(est_seed),
                 membership_cols=lc_membership_cols if lc_membership_cols else None,
+                lc_method=lc_method,
                 bws_worst_col=bws_worst_col if bws_mode else None,
                 estimate_lambda_w=bws_estimate_lambda_w if bws_mode else True,
             )
@@ -974,6 +1390,7 @@ if model_type == "latent_class":
                 })
                 st.warning(f"Q = {q} failed: {exc}")
 
+        st.session_state["_estimation_running"] = False
         progress.progress(1.0, text="Done!")
 
         bic_df = pd.DataFrame(bic_rows)
@@ -1009,10 +1426,26 @@ if model_type == "latent_class":
 if st.session_state.model_history:
     st.divider()
     st.subheader("Saved model runs")
-    for i, entry in enumerate(st.session_state.model_history, 1):
+    _delete_idx: int | None = None
+    for i, entry in enumerate(st.session_state.model_history):
         est = entry["estimation"]
-        st.markdown(
-            f"**{i}. {entry.get('label', 'model')}** ({entry.get('model_type', '?')}) "
-            f"— LL: {est.log_likelihood:.3f}, AIC: {est.aic:.2f}, "
-            f"BIC: {est.bic:.2f}"
-        )
+        _info_col, _del_col = st.columns([6, 1])
+        with _info_col:
+            st.markdown(
+                f"**{i + 1}. {entry.get('label', 'model')}** ({entry.get('model_type', '?')}) "
+                f"— LL: {est.log_likelihood:.3f}, AIC: {est.aic:.2f}, "
+                f"BIC: {est.bic:.2f}"
+            )
+        with _del_col:
+            if st.button("Delete", key=f"delete_model_{i}"):
+                _delete_idx = i
+
+    if _delete_idx is not None:
+        _deleted = st.session_state.model_history.pop(_delete_idx)
+        # Clear current results if they match the deleted model
+        _cur = st.session_state.model_results
+        if _cur is not None and _cur.get("label") == _deleted.get("label"):
+            st.session_state.model_results = None
+        st.rerun()
+
+slowbro_next_step("pages/2_⚙️_Model.py")

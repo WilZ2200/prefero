@@ -133,12 +133,14 @@ class FullModelSpec:
     # Latent class
     n_classes: int = 2
     membership_cols: list[str] | None = None
+    lc_method: str = "em"  # "em" or "direct"
 
     # Estimation settings
     n_draws: int = 200
     maxiter: int = 300
     seed: int = 123
     n_starts: int = 10
+    custom_start: list[float] | None = None  # user-supplied initial theta vector
 
     def __post_init__(self) -> None:
         valid_types = {"conditional", "mixed", "gmnl", "latent_class"}
