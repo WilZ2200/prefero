@@ -1,4 +1,14 @@
-# Choice Analysis Tool
+---
+title: 分析侠 Prefero
+emoji: 🧮
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
+# 分析侠 Prefero — DCE Analysis Tool
 
 End-to-end discrete choice experiment workflow:
 - reusable estimation engine (`conditional logit` and `mixed logit`)
