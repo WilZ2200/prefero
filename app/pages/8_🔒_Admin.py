@@ -25,37 +25,30 @@ from utils import init_session_state, sidebar_branding  # noqa: E402
 init_session_state()
 sidebar_branding()
 
-# ── Admin access control ───────────────────────────────────────────
+# ── Developer key gate ─────────────────────────────────────────────
 
-_admin_csv = os.environ.get("PREFERO_ADMIN_USERS", "")
-_admin_users = {u.strip().lower() for u in _admin_csv.split(",") if u.strip()}
+_dev_key = os.environ.get("PREFERO_ADMIN_PASSWORD", "")
 
-current_user = st.session_state.get("username", "").strip().lower()
-
-if not _admin_users or current_user not in _admin_users:
-    st.error("Access denied. You do not have admin privileges.")
+if not _dev_key:
+    st.error("Developer mode is not configured.")
     st.stop()
 
-# ── Admin password gate ───────────────────────────────────────────
-
-_admin_pw = os.environ.get("PREFERO_ADMIN_PASSWORD", "")
-
-if _admin_pw and not st.session_state.get("_admin_authenticated"):
-    st.title("Admin Dashboard")
-    st.caption("This page requires an additional admin password.")
-    pw_input = st.text_input("Admin password", type="password", key="_admin_pw_input")
+if not st.session_state.get("_admin_authenticated"):
+    st.title("Developer Mode")
+    st.caption("Enter the developer key to continue.")
+    key_input = st.text_input("Developer key", type="password", key="_dev_key_input")
     if st.button("Unlock", use_container_width=True):
-        if pw_input == _admin_pw:
+        if key_input == _dev_key:
             st.session_state["_admin_authenticated"] = True
             st.rerun()
         else:
-            st.error("Incorrect admin password.")
+            st.error("Incorrect developer key.")
     st.stop()
 
 # ── Page header ────────────────────────────────────────────────────
 
-st.title("Admin Dashboard")
-st.caption(f"Signed in as admin: **{st.session_state.get('username', '')}**")
+st.title("Developer Dashboard")
+st.caption(f"Signed in as: **{st.session_state.get('username', '')}**")
 
 # ── 1. Registered Users ───────────────────────────────────────────
 
@@ -104,7 +97,7 @@ if rows:
                 conn.execute("UPDATE users SET email = '' WHERE username = ?", (del_user,))
                 conn.commit()
                 from community_db import log_activity, _save_users_to_hf
-                log_activity(current_user, "admin_reset_password", f"Reset password for {del_user}")
+                log_activity(st.session_state.get("username", ""), "admin_reset_password", f"Reset password for {del_user}")
                 _save_users_to_hf()
                 st.success(f"Password reset for **{del_user}**. They can now set a new one.")
                 st.rerun()
@@ -117,7 +110,7 @@ if rows:
                     conn.execute("DELETE FROM users WHERE username = ?", (del_user,))
                     conn.commit()
                     from community_db import log_activity, _save_users_to_hf
-                    log_activity(current_user, "admin_delete_user", f"Deleted {del_user}")
+                    log_activity(st.session_state.get("username", ""), "admin_delete_user", f"Deleted {del_user}")
                     _save_users_to_hf()
                     st.session_state.pop("_admin_confirm_delete", None)
                     st.success(f"**{del_user}** has been deleted. They can re-register.")
