@@ -288,7 +288,7 @@ def username_gate() -> bool:
     )
     st.markdown(
         "<p style='text-align:center; color:gray;'>"
-        "This is how other users will see you in the community.</p>",
+        "Enter your username to log in, or choose a new one to create an account.</p>",
         unsafe_allow_html=True,
     )
 
@@ -308,15 +308,20 @@ def username_gate() -> bool:
         elif not re.match(r'^[\w\-]+$', name):
             st.error("Username can only contain letters, numbers, underscores, and hyphens.")
         else:
-            # Try to register in the community DB
             try:
-                from community_db import init_db, create_user, get_user_by_name
+                from community_db import init_db, create_user, get_user_by_name, log_activity
 
                 init_db()
                 existing = get_user_by_name(name)
                 if existing:
-                    st.error(f"Username '{name}' is already taken. Please choose another.")
+                    # Returning user — log them in
+                    st.session_state["username"] = existing.username
+                    st.session_state["user_id"] = existing.id
+                    log_activity(existing.username, "login", "Returning user")
+                    st.success(f"Welcome back, {existing.username}!")
+                    st.rerun()
                 else:
+                    # New user — create account
                     email = st.session_state.get("auth_email", "")
                     user = create_user(name, email=email)
                     st.session_state["username"] = user.username
@@ -324,6 +329,6 @@ def username_gate() -> bool:
                     st.success(f"Welcome, {user.username}!")
                     st.rerun()
             except Exception as exc:
-                st.error(f"Error creating user: {exc}")
+                st.error(f"Error: {exc}")
 
     return False

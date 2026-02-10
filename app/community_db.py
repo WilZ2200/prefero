@@ -2,16 +2,140 @@
 
 Stores users (username, email, join date) and posts (author, title, body,
 replies, timestamps).  Designed for single-instance deployment (HF Spaces).
+
+User accounts are persisted to a private HF Dataset repo
+(Wil2200/prefero-data) so they survive container restarts.
+Posts/replies are ephemeral (in-memory SQLite).
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# HF Dataset persistence for user accounts
+# ---------------------------------------------------------------------------
+
+_HF_DATASET_REPO = "Wil2200/prefero-data"
+_users_synced = False  # only sync once per process
+
+
+def _hf_token() -> str | None:
+    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+
+
+def _load_users_from_hf() -> list[dict]:
+    """Load user list from the HF dataset repo. Returns [] on failure."""
+    token = _hf_token()
+    if not token:
+        logger.debug("No HF token — skipping user sync")
+        return []
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(
+            repo_id=_HF_DATASET_REPO, filename="users.json",
+            repo_type="dataset", token=token,
+        )
+        with open(path) as f:
+            data = json.load(f)
+        return data.get("users", [])
+    except Exception as exc:
+        logger.warning("Failed to load users from HF: %s", exc)
+        return []
+
+
+def _save_users_to_hf() -> None:
+    """Persist the current user table to the HF dataset repo."""
+    token = _hf_token()
+    if not token:
+        return
+    try:
+        from huggingface_hub import HfApi
+        import tempfile
+
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT id, username, email, avatar_seed, joined_at FROM users ORDER BY id"
+        ).fetchall()
+        users = [dict(r) for r in rows]
+        next_id = max((u["id"] for u in users), default=0) + 1
+
+        data = {"users": users, "next_id": next_id}
+        tmp = os.path.join(tempfile.gettempdir(), "prefero_users.json")
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+
+        api = HfApi(token=token)
+        api.upload_file(
+            path_or_fileobj=tmp, path_in_repo="users.json",
+            repo_id=_HF_DATASET_REPO, repo_type="dataset",
+        )
+        logger.info("Synced %d users to HF dataset", len(users))
+    except Exception as exc:
+        logger.warning("Failed to save users to HF: %s", exc)
+
+
+def _save_activity_to_hf() -> None:
+    """Persist recent activity log to the HF dataset repo."""
+    token = _hf_token()
+    if not token:
+        return
+    try:
+        from huggingface_hub import HfApi
+        import tempfile
+
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT 500"
+        ).fetchall()
+        logs = [dict(r) for r in rows]
+
+        tmp = os.path.join(tempfile.gettempdir(), "prefero_activity.json")
+        with open(tmp, "w") as f:
+            json.dump({"logs": logs}, f, indent=2)
+
+        api = HfApi(token=token)
+        api.upload_file(
+            path_or_fileobj=tmp, path_in_repo="activity_log.json",
+            repo_id=_HF_DATASET_REPO, repo_type="dataset",
+        )
+    except Exception as exc:
+        logger.warning("Failed to save activity to HF: %s", exc)
+
+
+def _sync_users_from_hf() -> None:
+    """Load persisted users into the local SQLite on startup (once)."""
+    global _users_synced
+    if _users_synced:
+        return
+    _users_synced = True
+
+    users = _load_users_from_hf()
+    if not users:
+        return
+
+    conn = _get_conn()
+    for u in users:
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, username, email, avatar_seed, joined_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (u["id"], u["username"], u.get("email", ""),
+                 u.get("avatar_seed", u["username"]), u["joined_at"]),
+            )
+        except Exception:
+            pass
+    conn.commit()
+    logger.info("Loaded %d users from HF dataset into SQLite", len(users))
 
 # ---------------------------------------------------------------------------
 # Database path — persistent on HF Spaces at /data or fallback to app dir
@@ -63,10 +187,21 @@ def init_db() -> None:
             created_at  REAL NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp   REAL NOT NULL,
+            username    TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            details     TEXT DEFAULT ''
+        );
+
         CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_replies_post   ON replies(post_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_activity_time  ON activity_log(timestamp DESC);
     """)
     conn.commit()
+    # Load persisted users from HF on first startup
+    _sync_users_from_hf()
 
 
 # ---------------------------------------------------------------------------
@@ -121,15 +256,55 @@ def create_user(username: str, email: str = "") -> User:
             (username.strip(), email, username.strip(), now),
         )
         conn.commit()
-        return User(
+        user = User(
             id=cur.lastrowid,
             username=username.strip(),
             email=email,
             avatar_seed=username.strip(),
             joined_at=now,
         )
+        log_activity(username.strip(), "register", f"New account created")
+        # Persist to HF dataset repo
+        _save_users_to_hf()
+        return user
     except sqlite3.IntegrityError:
         raise ValueError(f"Username '{username}' is already taken.")
+
+
+# ---------------------------------------------------------------------------
+# Activity logging
+# ---------------------------------------------------------------------------
+
+
+def log_activity(username: str, action: str, details: str = "") -> None:
+    """Record an activity event."""
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT INTO activity_log (timestamp, username, action, details) "
+            "VALUES (?, ?, ?, ?)",
+            (time.time(), username, action, details),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("Failed to log activity: %s", exc)
+
+
+def get_recent_activity(limit: int = 100) -> list[dict]:
+    """Get recent activity log entries."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_users() -> list[User]:
+    """Get all registered users."""
+    conn = _get_conn()
+    rows = conn.execute("SELECT * FROM users ORDER BY joined_at DESC").fetchall()
+    return [User(**dict(r)) for r in rows]
 
 
 def get_user_by_name(username: str) -> User | None:
