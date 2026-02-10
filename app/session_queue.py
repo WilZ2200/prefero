@@ -143,23 +143,42 @@ def queue_gate() -> bool:
     # Scrolling multilingual banner
     language_banner()
 
+    _SLOWPOKE_IMG = (
+        "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites"
+        "/pokemon/other/official-artwork/79.png"
+    )
+
+    n_active = active_count()
+    spots_left = spots_available()
+
+    # ── Slowpoke waiting illustration ──
     st.markdown(
         "<div style='text-align:center; margin-top:20px;'>"
-        f"<img src='{_SLOWBRO_IMG}' width='100' />"
+        f"<img src='{_SLOWPOKE_IMG}' width='120' />"
         "</div>",
         unsafe_allow_html=True,
     )
     st.markdown(
-        "<h3 style='text-align:center;'>Slowbro is a bit busy right now...</h3>",
+        "<h3 style='text-align:center;'>Slowbro is busy crunching numbers...</h3>"
+        "<p style='text-align:center; color:gray;'>"
+        "All seats are taken! But don't worry — Slowpoke is keeping "
+        "your spot warm. You'll get in as soon as someone finishes.</p>",
         unsafe_allow_html=True,
     )
 
-    n_active = active_count()
-    st.markdown(
-        f"<p style='text-align:center; color:gray;'>"
-        f"{n_active}/{_MAX_CONCURRENT} seats occupied.  "
-        f"You are in the waiting room.</p>",
-        unsafe_allow_html=True,
+    # ── Queue status ──
+    q1, q2 = st.columns(2)
+    with q1:
+        st.metric("Active users", f"{n_active} / {_MAX_CONCURRENT}")
+    with q2:
+        st.metric("Seats available", str(spots_left))
+
+    # ── Session policy note ──
+    st.warning(
+        "**How the queue works:** Each user gets a seat for as long as "
+        "they're active. Sessions expire after **2 minutes** of inactivity "
+        "to keep things moving — but if you're running a model, your seat "
+        "is safe until estimation completes."
     )
 
     # ── Rolling cultural facts ──
