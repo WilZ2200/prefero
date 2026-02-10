@@ -34,6 +34,7 @@ def _queue_enabled() -> bool:
 
 _lock = threading.Lock()
 _active_sessions: dict[str, float] = {}  # session_id → last_heartbeat
+_session_usernames: dict[str, str] = {}  # session_id → username
 
 
 def _cleanup_stale() -> None:
@@ -42,6 +43,7 @@ def _cleanup_stale() -> None:
     stale = [sid for sid, ts in _active_sessions.items() if now - ts > _SESSION_TIMEOUT]
     for sid in stale:
         del _active_sessions[sid]
+        _session_usernames.pop(sid, None)
 
 
 def _ensure_session_id() -> str:
@@ -83,6 +85,25 @@ def leave() -> None:
     sid = _ensure_session_id()
     with _lock:
         _active_sessions.pop(sid, None)
+        _session_usernames.pop(sid, None)
+
+
+def register_username(username: str) -> None:
+    """Associate the current session with a username."""
+    sid = _ensure_session_id()
+    with _lock:
+        _session_usernames[sid] = username
+
+
+def is_username_active(username: str) -> bool:
+    """Check if a username is logged in on another active session."""
+    sid = _ensure_session_id()
+    with _lock:
+        _cleanup_stale()
+        for other_sid, uname in _session_usernames.items():
+            if uname == username and other_sid != sid:
+                return True
+        return False
 
 
 def active_count() -> int:

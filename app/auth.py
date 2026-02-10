@@ -1,23 +1,23 @@
 """Authentication module for 分析侠 Prefero.
 
 Supports two methods:
-  1. Invitation code (instant, checked against env var)
-  2. Email OTP via SMTP (6-digit code, 5-min expiry, rate-limited)
+  1. MUCHE Member login (name fuzzy-match + password)
+  2. Invitation code (instant, checked against env var)
 
-After authentication, users choose a display name (username).
+MUCHE team members are stored as a whitelist.
+First login: match name + set password to claim account.
+Subsequent logins: match name + enter password.
+Fuzzy matching allows minor name variations (e.g. "Nora" matches "Noura").
 
 Toggle with PREFERO_AUTH_ENABLED env var ("true" to enable).
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
-import random
-import smtplib
-import string
-import time
-from email.mime.text import MIMEText
+from difflib import SequenceMatcher
 
 import streamlit as st
 
@@ -36,61 +36,91 @@ def _get_invitation_codes() -> list[str]:
     return [c.strip().upper() for c in raw.split(",") if c.strip()]
 
 
-def _smtp_configured() -> bool:
-    return bool(os.environ.get("SMTP_USER")) and bool(os.environ.get("SMTP_PASS"))
-
-
 # ---------------------------------------------------------------------------
-# OTP helpers
+# MUCHE team whitelist
 # ---------------------------------------------------------------------------
 
-def _generate_otp() -> str:
-    return "".join(random.choices(string.digits, k=6))
+MUCHE_MEMBERS: list[str] = [
+    # Director
+    "Henry Cutler",
+    # Academics
+    "Mona Aghdaee",
+    "Anam Bilgrami",
+    "Jonas Fooken",
+    "Yuanyuan Gu",
+    "Martin Hoyle",
+    "Varinder Jeet",
+    "Ali Furkan Kalay",
+    "Alicia Norman",
+    "Bonny Parkinson",
+    "Smriti Raichand",
+    "Rezwanul Rana",
+    "Rajan Sharma",
+    "Shari Stathis",
+    "Dandan Yu",
+    # Operations
+    "Ashley Soytemiz",
+    # Honorary & Visiting
+    "Marco Bertoni",
+    "David Cullen",
+    "Nils Gutacker",
+    "Rowena Jacobs",
+    "Elizabeth-Ann Schroeder",
+    "Kompal Sinha",
+    "Neil Soderlund",
+    "Apostolos Tsiachristas",
+    # Graduate research students
+    "Meimei Chen",
+    "Han Cheng",
+    "Kadek Darmawan",
+    "Shan Jiang",
+    "Maggie Lee",
+    "Noura Saba",
+    "Saranjit Singh",
+    "Zachery Tirrell",
+    "Hengzhe Zhao",
+]
 
 
-def _send_otp_email(recipient: str, code: str) -> None:
-    """Send the OTP email via SMTP. Raises on failure."""
-    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    user = os.environ.get("SMTP_USER", "")
-    password = os.environ.get("SMTP_PASS", "")
-
-    body = (
-        f"Your verification code is: {code}\n\n"
-        "This code expires in 5 minutes.\n\n"
-        "-- 分析侠 Prefero"
-    )
-
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = "Your Prefero Login Code"
-    msg["From"] = user
-    msg["To"] = recipient
-
-    with smtplib.SMTP(host, port, timeout=15) as server:
-        server.starttls()
-        server.login(user, password)
-        server.sendmail(user, [recipient], msg.as_string())
+def _normalize(name: str) -> str:
+    """Lowercase, strip, collapse whitespace, remove hyphens."""
+    return re.sub(r"[\s\-]+", " ", name.strip().lower())
 
 
-def _check_rate_limit(email: str) -> bool:
-    """Return True if the email is within rate limits (max 3 per 10 min)."""
-    attempts: dict[str, list[float]] = st.session_state.get("_otp_attempts", {})
-    now = time.time()
-    window = 10 * 60  # 10 minutes
+def _fuzzy_match(input_name: str, threshold: float = 0.75) -> str | None:
+    """Find the best fuzzy match from MUCHE_MEMBERS.
 
-    timestamps = [t for t in attempts.get(email, []) if now - t < window]
-    return len(timestamps) < 3
+    Returns the canonical name if similarity >= threshold, else None.
+    Tries full name match first, then first-name-only match.
+    """
+    norm_input = _normalize(input_name)
+    if not norm_input:
+        return None
+
+    best_name: str | None = None
+    best_score: float = 0.0
+
+    for member in MUCHE_MEMBERS:
+        norm_member = _normalize(member)
+        score = SequenceMatcher(None, norm_input, norm_member).ratio()
+        if score > best_score:
+            best_score = score
+            best_name = member
+
+        first_name = norm_member.split()[0]
+        score_first = SequenceMatcher(None, norm_input, first_name).ratio()
+        if score_first > best_score:
+            best_score = score_first
+            best_name = member
+
+    if best_score >= threshold:
+        return best_name
+    return None
 
 
-def _record_otp_attempt(email: str) -> None:
-    if "_otp_attempts" not in st.session_state:
-        st.session_state["_otp_attempts"] = {}
-    attempts: dict[str, list[float]] = st.session_state["_otp_attempts"]
-    now = time.time()
-    window = 10 * 60
-    existing = [t for t in attempts.get(email, []) if now - t < window]
-    existing.append(now)
-    attempts[email] = existing
+def _hash_password(password: str) -> str:
+    """Simple SHA-256 hash for password storage."""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -104,17 +134,13 @@ _SLOWBRO_IMG = (
 
 
 def auth_gate() -> bool:
-    """Show auth UI. Returns True if authenticated, False otherwise.
-
-    If auth is disabled (PREFERO_AUTH_ENABLED != "true"), always returns True.
-    """
+    """Show auth UI. Returns True if authenticated, False otherwise."""
     if not _auth_enabled():
         return True
 
     if st.session_state.get("authenticated"):
         return True
 
-    # ── Auth page layout ──────────────────────────────────────────
     try:
         st.set_page_config(
             page_title="分析侠 Prefero - Sign In",
@@ -124,7 +150,6 @@ def auth_gate() -> bool:
     except st.errors.StreamlitAPIException:
         pass
 
-    # Scrolling multilingual banner
     from utils import language_banner
     language_banner()
 
@@ -143,9 +168,98 @@ def auth_gate() -> bool:
         unsafe_allow_html=True,
     )
 
-    tab_invite, tab_email = st.tabs(["Invitation Code", "Email"])
+    tab_member, tab_invite = st.tabs(["MUCHE Member", "Invitation Code"])
 
-    # ── Tab 1: Invitation Code ────────────────────────────────────
+    # ── Tab 1: MUCHE Member (name + password) ─────────────────────
+    with tab_member:
+        st.caption("Enter your name as it appears on the MUCHE website.")
+
+        name_input = st.text_input(
+            "Your name",
+            key="_auth_member_name",
+            placeholder="e.g. Noura Saba",
+        )
+
+        matched_name = None
+        if name_input and name_input.strip():
+            matched_name = _fuzzy_match(name_input)
+
+        if matched_name:
+            st.success(f"Matched: **{matched_name}**")
+
+            from community_db import init_db, get_user_by_name
+            init_db()
+            existing = get_user_by_name(matched_name)
+
+            if existing and existing.email:
+                # Returning user — enter password
+                pw_input = st.text_input(
+                    "Password",
+                    key="_auth_member_pw",
+                    type="password",
+                )
+                if st.button("Sign In", key="_auth_member_login_btn", use_container_width=True):
+                    if not pw_input:
+                        st.error("Please enter your password.")
+                    elif _hash_password(pw_input) == existing.email:
+                        from session_queue import is_username_active, register_username
+                        if is_username_active(existing.username):
+                            st.error(
+                                f"**{existing.username}** is already logged in. "
+                                "Wait for that session to expire (2 min idle)."
+                            )
+                        else:
+                            st.session_state["authenticated"] = True
+                            st.session_state["username"] = existing.username
+                            st.session_state["user_id"] = existing.id
+                            register_username(existing.username)
+                            from community_db import log_activity
+                            log_activity(existing.username, "login", "MUCHE member")
+                            st.success(f"Welcome back, {existing.username}!")
+                            st.rerun()
+                    else:
+                        st.error("Incorrect password.")
+            else:
+                # First time — set password to claim account
+                st.info("First time? Set a password to claim your account.")
+                pw1 = st.text_input(
+                    "Choose a password",
+                    key="_auth_member_pw1",
+                    type="password",
+                )
+                pw2 = st.text_input(
+                    "Confirm password",
+                    key="_auth_member_pw2",
+                    type="password",
+                )
+                if st.button("Create Account", key="_auth_member_create_btn", use_container_width=True):
+                    if not pw1 or not pw2:
+                        st.error("Please fill in both password fields.")
+                    elif len(pw1) < 4:
+                        st.error("Password must be at least 4 characters.")
+                    elif pw1 != pw2:
+                        st.error("Passwords do not match.")
+                    else:
+                        try:
+                            from community_db import create_user, log_activity
+                            from session_queue import register_username
+                            user = create_user(matched_name, email=_hash_password(pw1))
+                            st.session_state["authenticated"] = True
+                            st.session_state["username"] = user.username
+                            st.session_state["user_id"] = user.id
+                            register_username(user.username)
+                            log_activity(user.username, "register", "MUCHE member")
+                            st.success(f"Account created! Welcome, {user.username}!")
+                            st.rerun()
+                        except ValueError as exc:
+                            st.error(str(exc))
+        elif name_input and name_input.strip():
+            st.warning(
+                "Name not found in the MUCHE team list. "
+                "Please check your spelling, or use an invitation code."
+            )
+
+    # ── Tab 2: Invitation Code ────────────────────────────────────
     with tab_invite:
         code_input = st.text_input(
             "Enter your invitation code",
@@ -164,94 +278,6 @@ def auth_gate() -> bool:
             else:
                 st.error("Invalid invitation code.")
 
-    # ── Tab 2: Email OTP ──────────────────────────────────────────
-    with tab_email:
-        if not _smtp_configured():
-            st.info(
-                "Email authentication is not configured. "
-                "Please use an invitation code, or contact the administrator."
-            )
-        else:
-            email_input = st.text_input(
-                "Email address",
-                key="_auth_email_input",
-            )
-
-            otp_sent = st.session_state.get("_otp_code") is not None
-
-            if not otp_sent:
-                if st.button(
-                    "Send Code", key="_auth_send_btn", use_container_width=True
-                ):
-                    email = email_input.strip()
-                    if not email or "@" not in email:
-                        st.error("Please enter a valid email address.")
-                    elif not _check_rate_limit(email):
-                        st.error(
-                            "Too many requests. Please wait before requesting "
-                            "another code."
-                        )
-                    else:
-                        otp = _generate_otp()
-                        try:
-                            _send_otp_email(email, otp)
-                        except Exception as exc:
-                            st.error(f"Failed to send email: {exc}")
-                        else:
-                            st.session_state["_otp_code"] = otp
-                            st.session_state["_otp_email"] = email
-                            st.session_state["_otp_time"] = time.time()
-                            _record_otp_attempt(email)
-                            st.success(f"Code sent to {email}.")
-                            st.rerun()
-            else:
-                target_email = st.session_state.get("_otp_email", "")
-                st.caption(f"A code was sent to **{target_email}**.")
-
-                otp_input = st.text_input(
-                    "Enter the 6-digit code",
-                    key="_auth_otp_input",
-                    max_chars=6,
-                )
-
-                col_verify, col_resend = st.columns(2)
-
-                with col_verify:
-                    if st.button(
-                        "Verify", key="_auth_verify_btn", use_container_width=True
-                    ):
-                        stored_otp = st.session_state.get("_otp_code", "")
-                        otp_time = st.session_state.get("_otp_time", 0.0)
-
-                        if time.time() - otp_time > 300:
-                            st.error("Code expired. Please request a new one.")
-                            st.session_state.pop("_otp_code", None)
-                            st.session_state.pop("_otp_email", None)
-                            st.session_state.pop("_otp_time", None)
-                        elif otp_input.strip() == stored_otp:
-                            st.session_state["authenticated"] = True
-                            st.session_state["auth_email"] = target_email
-                            # Clean up OTP state
-                            st.session_state.pop("_otp_code", None)
-                            st.session_state.pop("_otp_email", None)
-                            st.session_state.pop("_otp_time", None)
-                            st.success("Access granted!")
-                            st.rerun()
-                        else:
-                            st.error("Incorrect code. Please try again.")
-
-                with col_resend:
-                    if st.button(
-                        "Resend Code",
-                        key="_auth_resend_btn",
-                        use_container_width=True,
-                    ):
-                        # Clear old OTP so the form resets to "Send Code" state
-                        st.session_state.pop("_otp_code", None)
-                        st.session_state.pop("_otp_email", None)
-                        st.session_state.pop("_otp_time", None)
-                        st.rerun()
-
     return False
 
 
@@ -262,11 +288,10 @@ def auth_gate() -> bool:
 def username_gate() -> bool:
     """Prompt the user to choose a display name if they haven't yet.
 
-    Returns True if username is set, False otherwise.
-    When auth is disabled, auto-assigns "Guest" without prompting.
+    For MUCHE members, username is already set during auth_gate.
+    Only invitation code users see this screen.
     """
     if not _auth_enabled():
-        # Local dev: auto-assign guest identity
         if not st.session_state.get("username"):
             st.session_state["username"] = "Guest"
             st.session_state["user_id"] = 0
@@ -275,7 +300,6 @@ def username_gate() -> bool:
     if st.session_state.get("username"):
         return True
 
-    # ── Username selection UI ────────────────────────────────────
     st.markdown(
         "<div style='text-align:center;'>"
         f"<img src='{_SLOWBRO_IMG}' width='100' />"
@@ -284,11 +308,6 @@ def username_gate() -> bool:
     )
     st.markdown(
         "<h3 style='text-align:center;'>Choose your display name</h3>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        "<p style='text-align:center; color:gray;'>"
-        "Enter your username to log in, or choose a new one to create an account.</p>",
         unsafe_allow_html=True,
     )
 
@@ -305,27 +324,33 @@ def username_gate() -> bool:
             st.error("Please enter a username.")
         elif len(name) < 2:
             st.error("Username must be at least 2 characters.")
-        elif not re.match(r'^[\w\-]+$', name):
-            st.error("Username can only contain letters, numbers, underscores, and hyphens.")
+        elif not re.match(r'^[\w\-\s]+$', name):
+            st.error("Username can only contain letters, numbers, spaces, underscores, and hyphens.")
         else:
             try:
                 from community_db import init_db, create_user, get_user_by_name, log_activity
+                from session_queue import is_username_active, register_username
 
                 init_db()
                 existing = get_user_by_name(name)
                 if existing:
-                    # Returning user — log them in
-                    st.session_state["username"] = existing.username
-                    st.session_state["user_id"] = existing.id
-                    log_activity(existing.username, "login", "Returning user")
-                    st.success(f"Welcome back, {existing.username}!")
-                    st.rerun()
+                    if is_username_active(existing.username):
+                        st.error(
+                            f"**{existing.username}** is already logged in. "
+                            "Wait for that session to expire."
+                        )
+                    else:
+                        st.session_state["username"] = existing.username
+                        st.session_state["user_id"] = existing.id
+                        register_username(existing.username)
+                        log_activity(existing.username, "login", "Returning user")
+                        st.success(f"Welcome back, {existing.username}!")
+                        st.rerun()
                 else:
-                    # New user — create account
-                    email = st.session_state.get("auth_email", "")
-                    user = create_user(name, email=email)
+                    user = create_user(name, email="")
                     st.session_state["username"] = user.username
                     st.session_state["user_id"] = user.id
+                    register_username(user.username)
                     st.success(f"Welcome, {user.username}!")
                     st.rerun()
             except Exception as exc:

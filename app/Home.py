@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import streamlit as st
 
 from utils import init_session_state, language_banner, sidebar_branding, slowbro_next_step
@@ -154,6 +157,37 @@ with _bro_col2:
         > *Slowbro is tired. When Slowbro is tired, Slowbro needs coffee.* ☕
         """
     )
-    # ── Buy me a coffee placeholder ──
-    # TODO: Replace with actual Buy Me a Coffee widget/link
-    st.button("☕ Buy Slowbro a Coffee", disabled=True, help="Coming soon!")
+    # ── Buy Slowbro a coffee ──
+    _coffee_url = os.environ.get("COFFEE_URL", "https://buymeacoffee.com/preferohz")
+    _wechat_qr_path = Path(__file__).resolve().parent / "wechat_qr.jpg"
+    _wechat_qr = str(_wechat_qr_path) if _wechat_qr_path.exists() else os.environ.get("WECHAT_PAY_QR_URL", "")
+
+    _bmc_logo = "https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg"
+    _wechat_logo = "https://upload.wikimedia.org/wikipedia/en/thumb/f/ff/WeChat_logo.svg/154px-WeChat_logo.svg.png"
+
+    _btn_style = (
+        "display:flex; align-items:center; justify-content:center; "
+        "gap:8px; padding:12px 16px; border-radius:8px; "
+        "font-weight:600; font-size:0.95em; height:48px; "
+        "text-decoration:none; cursor:pointer;"
+    )
+
+    st.markdown(
+        "<div style='display:flex; gap:12px;'>"
+        # ── Buy Me a Coffee ──
+        f"<a href='{_coffee_url}' target='_blank' style='"
+        f"{_btn_style} flex:1; background:#FFDD00; color:#000;'>"
+        f"<img src='{_bmc_logo}' width='22' style='flex-shrink:0;'/>"
+        f"Buy Slowbro a Coffee</a>"
+        # ── WeChat ──
+        f"<div style='{_btn_style} flex:1; background:#07C160; color:#fff;' "
+        f"id='wechat-tip-btn'>"
+        f"<img src='{_wechat_logo}' width='22' style='flex-shrink:0;'/>"
+        f"微信打赏</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    if _wechat_qr:
+        with st.expander("扫码打赏 Slowbro 一杯咖啡", expanded=False):
+            st.image(_wechat_qr, width=220)
