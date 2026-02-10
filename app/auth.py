@@ -7,7 +7,7 @@ Supports two methods:
 MUCHE team members are stored as a whitelist.
 First login: match name + set password to claim account.
 Subsequent logins: match name + enter password.
-Fuzzy matching allows minor name variations (e.g. "Nora" matches "Noura").
+Fuzzy matching allows minor name variations (e.g. "John" matches "Jonathan").
 
 Toggle with PREFERO_AUTH_ENABLED env var ("true" to enable).
 """
@@ -213,7 +213,7 @@ def auth_gate() -> bool:
         name_input = st.text_input(
             "Your name",
             key="_auth_member_name",
-            placeholder="e.g. Noura Saba",
+            placeholder="e.g. Jordan McAllister",
         )
 
         matched_name = None

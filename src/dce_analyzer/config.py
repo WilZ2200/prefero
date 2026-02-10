@@ -130,6 +130,9 @@ class FullModelSpec:
     bws_worst_col: str | None = None
     estimate_lambda_w: bool = True
 
+    # GMNL variant: "general" (gamma free), "s-mnl" (gamma=0), "gmnl-ii" (gamma=1)
+    gmnl_variant: str = "general"
+
     # Latent class
     n_classes: int = 2
     membership_cols: list[str] | None = None

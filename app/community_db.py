@@ -17,9 +17,81 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# IP geolocation helpers
+# ---------------------------------------------------------------------------
+
+# In-memory cache: ip -> {country, region, city, org, is_vpn}
+_geo_cache: dict[str, dict] = {}
+_GEO_CACHE_MAX = 500
+
+
+def get_client_ip() -> str | None:
+    """Extract client IP from Streamlit request headers (X-Forwarded-For)."""
+    try:
+        import streamlit as st
+        xff = st.context.headers.get("x-forwarded-for")
+        if xff and isinstance(xff, str):
+            return xff.split(",")[0].strip()
+        return None
+    except Exception:
+        return None
+
+
+def geolocate_ip(ip: str | None) -> dict:
+    """Look up country, region, org for an IP via ipapi.co (free, 30k/month).
+
+    Returns dict with keys: country, region, city, org, is_vpn.
+    Results are cached in-memory.
+    """
+    if not ip:
+        return {}
+    if ip in _geo_cache:
+        return _geo_cache[ip]
+
+    result: dict = {}
+    try:
+        import requests
+        resp = requests.get(
+            f"https://ipapi.co/{ip}/json/",
+            timeout=3,
+            headers={"User-Agent": "Prefero/1.0"},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if not data.get("error"):
+                org = data.get("org", "")
+                # Heuristic VPN/datacenter detection: check org name
+                _vpn_keywords = [
+                    "vpn", "proxy", "tunnel", "hosting", "datacenter",
+                    "data center", "cloud", "server", "digitalocean",
+                    "amazon", "aws", "google cloud", "microsoft azure",
+                    "linode", "vultr", "ovh", "hetzner", "mullvad",
+                    "nordvpn", "expressvpn", "surfshark", "proton",
+                ]
+                is_vpn = any(kw in org.lower() for kw in _vpn_keywords)
+                result = {
+                    "country": data.get("country_name", ""),
+                    "country_code": data.get("country_code", ""),
+                    "region": data.get("region", ""),
+                    "city": data.get("city", ""),
+                    "org": org,
+                    "is_vpn": is_vpn,
+                }
+    except Exception as exc:
+        logger.debug("Geo lookup failed for %s: %s", ip, exc)
+
+    # Cache result (even empty, to avoid repeated failed lookups)
+    if len(_geo_cache) < _GEO_CACHE_MAX:
+        _geo_cache[ip] = result
+    return result
+
 
 # ---------------------------------------------------------------------------
 # HF Dataset persistence for user accounts
@@ -200,6 +272,24 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_activity_time  ON activity_log(timestamp DESC);
     """)
     conn.commit()
+    # Schema migration: add IP/geo columns to activity_log if missing
+    try:
+        conn.execute("ALTER TABLE activity_log ADD COLUMN ip_address TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE activity_log ADD COLUMN country TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE activity_log ADD COLUMN region TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE activity_log ADD COLUMN is_vpn INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
     # Load persisted users from HF on first startup
     _sync_users_from_hf()
 
@@ -277,13 +367,22 @@ def create_user(username: str, email: str = "") -> User:
 
 
 def log_activity(username: str, action: str, details: str = "") -> None:
-    """Record an activity event."""
+    """Record an activity event with IP geolocation."""
     try:
         conn = _get_conn()
+        ip = get_client_ip()
+        geo = geolocate_ip(ip) if ip else {}
         conn.execute(
-            "INSERT INTO activity_log (timestamp, username, action, details) "
-            "VALUES (?, ?, ?, ?)",
-            (time.time(), username, action, details),
+            "INSERT INTO activity_log "
+            "(timestamp, username, action, details, ip_address, country, region, is_vpn) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                time.time(), username, action, details,
+                ip or "",
+                geo.get("country", ""),
+                geo.get("region", ""),
+                1 if geo.get("is_vpn") else 0,
+            ),
         )
         conn.commit()
     except Exception as exc:

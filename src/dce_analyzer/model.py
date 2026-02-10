@@ -716,6 +716,7 @@ class GmnlEstimator(MixedLogitEstimator):
         bws_data: BwsData | None = None,
         correlated: bool = False,
         correlation_groups: list[list[int]] | None = None,
+        fixed_gamma: float | None = None,
     ) -> None:
         super().__init__(
             tensors=tensors,
@@ -727,6 +728,8 @@ class GmnlEstimator(MixedLogitEstimator):
             correlation_groups=correlation_groups,
             bws_data=bws_data,
         )
+        self._fixed_gamma = fixed_gamma  # None = free, 0.0 = S-MNL, 1.0 = GMNL-II
+
         # Extra Halton draws for scale heterogeneity (one dim per individual per draw)
         scale_draws_np = generate_halton_draws(
             n_individuals=self.n_individuals,
@@ -738,11 +741,17 @@ class GmnlEstimator(MixedLogitEstimator):
             scale_draws_np[:, :, 0], dtype=torch.float32, device=self.device
         )  # (n_individuals, n_draws)
 
-        # Indices for the three extra GMNL parameters appended after MMNL params
+        # Indices for the extra GMNL parameters appended after MMNL params
         self._tau_idx = self.n_params          # tau (scale mean)
         self._sigma_tau_idx = self.n_params + 1  # raw sigma_tau (scale SD, softplus)
-        self._gamma_idx = self.n_params + 2      # raw gamma (sigmoid -> [0,1])
-        self.n_params += 3
+        if self._fixed_gamma is None:
+            # gamma is a free parameter
+            self._gamma_idx = self.n_params + 2      # raw gamma (sigmoid -> [0,1])
+            self.n_params += 3
+        else:
+            # gamma is fixed — not a free parameter
+            self._gamma_idx = None
+            self.n_params += 2
 
     def _initial_theta(self) -> np.ndarray:
         # Delegate to parent for MMNL params (handles both independent & correlated)
@@ -750,10 +759,12 @@ class GmnlEstimator(MixedLogitEstimator):
         # Extend to include GMNL-specific params (already allocated in n_params)
         if len(theta0) < self.n_params:
             theta0 = np.concatenate([theta0, np.zeros(self.n_params - len(theta0), dtype=np.float64)])
-        # tau=0 -> mean scale=1, raw_sigma_tau=-1 -> small scale SD, raw_gamma=0 -> gamma=0.5
+        # tau=0 -> mean scale=1, raw_sigma_tau=-1 -> small scale SD
         theta0[self._tau_idx] = 0.0
         theta0[self._sigma_tau_idx] = -1.0
-        theta0[self._gamma_idx] = 0.0
+        if self._gamma_idx is not None:
+            # raw_gamma=0 -> gamma=0.5
+            theta0[self._gamma_idx] = 0.0
         return theta0
 
     def _betas_from_theta(self, theta: torch.Tensor) -> torch.Tensor:
@@ -768,7 +779,10 @@ class GmnlEstimator(MixedLogitEstimator):
 
         tau = theta[self._tau_idx]
         sigma_tau = _positive(theta[self._sigma_tau_idx])
-        gamma = torch.sigmoid(theta[self._gamma_idx])
+        if self._fixed_gamma is not None:
+            gamma = torch.tensor(self._fixed_gamma, dtype=theta.dtype, device=theta.device)
+        else:
+            gamma = torch.sigmoid(theta[self._gamma_idx])
 
         # Scale factor: sigma_i = exp(tau + sigma_tau * epsilon_i)
         # shape: (n_individuals, n_draws)
@@ -819,23 +833,32 @@ class GmnlEstimator(MixedLogitEstimator):
         tau_est = float(theta_hat[self._tau_idx])
         raw_sigma_tau = theta_hat[self._sigma_tau_idx]
         sigma_tau_est = float(np.logaddexp(0.0, raw_sigma_tau) + 1e-6)
-        raw_gamma = theta_hat[self._gamma_idx]
-        gamma_est = float(1.0 / (1.0 + np.exp(-raw_gamma)))
 
         se_tau = float("nan")
         se_sigma_tau = float("nan")
-        se_gamma = float("nan")
         if vcov is not None:
             se_tau = float(np.sqrt(max(vcov[self._tau_idx, self._tau_idx], 0.0)))
             var_raw_st = vcov[self._sigma_tau_idx, self._sigma_tau_idx]
             deriv_st = self._softplus_derivative(raw_sigma_tau)
             se_sigma_tau = float(abs(deriv_st) * np.sqrt(max(var_raw_st, 0.0)))
-            var_raw_g = vcov[self._gamma_idx, self._gamma_idx]
-            deriv_g = gamma_est * (1.0 - gamma_est)  # sigmoid derivative
-            se_gamma = float(abs(deriv_g) * np.sqrt(max(var_raw_g, 0.0)))
 
         rows.append(self._make_row("tau (scale mean)", "scale", tau_est, se_tau, theta_index=self._tau_idx))
         rows.append(self._make_row("sigma_tau (scale SD)", "scale", sigma_tau_est, se_sigma_tau, theta_index=self._sigma_tau_idx))
-        rows.append(self._make_row("gamma (mixing)", "scale", gamma_est, se_gamma, theta_index=self._gamma_idx))
+
+        if self._fixed_gamma is not None:
+            # gamma is fixed — report as fixed value with no SE
+            rows.append(self._make_row(
+                f"gamma (fixed={self._fixed_gamma:.1f})", "scale",
+                self._fixed_gamma, float("nan"), theta_index=-1,
+            ))
+        else:
+            raw_gamma = theta_hat[self._gamma_idx]
+            gamma_est = float(1.0 / (1.0 + np.exp(-raw_gamma)))
+            se_gamma = float("nan")
+            if vcov is not None:
+                var_raw_g = vcov[self._gamma_idx, self._gamma_idx]
+                deriv_g = gamma_est * (1.0 - gamma_est)  # sigmoid derivative
+                se_gamma = float(abs(deriv_g) * np.sqrt(max(var_raw_g, 0.0)))
+            rows.append(self._make_row("gamma (mixing)", "scale", gamma_est, se_gamma, theta_index=self._gamma_idx))
 
         return pd.DataFrame(rows)

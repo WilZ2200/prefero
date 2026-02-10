@@ -87,6 +87,47 @@ def _check_session_timeout() -> None:
         st.stop()
 
 
+def _inject_activity_heartbeat() -> None:
+    """Inject JavaScript that detects user activity and auto-refreshes to keep the session alive.
+
+    Monitors scroll, mouse movement, keyboard, and touch events on the parent
+    document.  If activity is detected within the last 90 seconds, triggers a
+    lightweight page reload every 90 seconds.  Streamlit session state persists
+    across reloads, so the heartbeat() call in init_session_state() naturally
+    refreshes the server-side timestamp.
+    """
+    import os
+    if os.environ.get("PREFERO_QUEUE_ENABLED", "").lower() != "true":
+        return  # no queue → no need for activity tracking
+
+    import streamlit.components.v1 as _components
+    _components.html(
+        """
+        <script>
+        (function() {
+            var INTERVAL = 90000;  // 90 seconds
+            var lastActivity = Date.now();
+            var events = ['scroll', 'mousemove', 'keydown', 'touchstart', 'click', 'wheel'];
+            var doc;
+            try { doc = window.parent.document; } catch(e) { return; }
+
+            events.forEach(function(e) {
+                doc.addEventListener(e, function() { lastActivity = Date.now(); }, {passive: true});
+            });
+
+            setInterval(function() {
+                if (Date.now() - lastActivity < INTERVAL) {
+                    // User was active — trigger Streamlit rerun to refresh heartbeat
+                    try { window.parent.location.reload(); } catch(e) {}
+                }
+            }, INTERVAL);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def init_session_state() -> None:
     """Ensure every shared session-state key exists with its default value."""
     for key, default in _SESSION_DEFAULTS.items():
@@ -99,6 +140,7 @@ def init_session_state() -> None:
     require_queue_slot()
     queue_heartbeat()
     st.session_state["_queue_admitted"] = True
+    _inject_activity_heartbeat()
     import inspect
     _caller = inspect.stack()[1].filename
     _page = Path(_caller).stem
@@ -118,12 +160,96 @@ def data_is_loaded() -> bool:
     return st.session_state.get("df") is not None
 
 
+def _is_admin_user() -> bool:
+    """Check if the current user has admin privileges."""
+    import os
+    admin_csv = os.environ.get("PREFERO_ADMIN_USERS", "")
+    if not admin_csv.strip():
+        return False
+    admin_users = {u.strip().lower() for u in admin_csv.split(",") if u.strip()}
+    current = st.session_state.get("username", "").strip().lower()
+    return current in admin_users
+
+
 def slowbro_status() -> None:
     """Inject global Slowbro status widget into Streamlit's fixed header."""
     _slowbro_img = (
         "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites"
         "/pokemon/other/official-artwork/80.png"
     )
+
+    # Build optional developer entry menu (admin only)
+    _dev_menu_css = ""
+    _dev_menu_html = ""
+    if _is_admin_user():
+        _dev_menu_css = """
+        /* Hide Admin page from sidebar nav */
+        [data-testid="stSidebarNav"] a[href*="Admin"] {
+            display: none !important;
+        }
+        /* Developer entry ⋯ menu */
+        .dev-entry {
+            position: fixed;
+            top: 10px;
+            right: 14px;
+            z-index: 1001;
+        }
+        .dev-entry-btn {
+            background: rgba(50,50,50,0.7);
+            border: none;
+            color: #999;
+            font-size: 16px;
+            cursor: pointer;
+            border-radius: 6px;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s;
+        }
+        .dev-entry-btn:hover {
+            background: rgba(80,80,80,0.9);
+            color: #ddd;
+        }
+        .dev-entry-dropdown {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 34px;
+            background: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 4px 0;
+            min-width: 170px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+        .dev-entry:hover .dev-entry-dropdown {
+            display: block;
+        }
+        .dev-entry-dropdown a {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            color: #ccc;
+            text-decoration: none;
+            font-size: 0.82rem;
+        }
+        .dev-entry-dropdown a:hover {
+            background: rgba(255,255,255,0.08);
+            color: #fff;
+        }
+        """
+        _dev_menu_html = """
+        <div class="dev-entry">
+            <div class="dev-entry-btn">⋯</div>
+            <div class="dev-entry-dropdown">
+                <a href="/🔒_Admin" target="_self">🔧 Developer Entry</a>
+            </div>
+        </div>
+        """
+
     st.markdown(
         f"""
         <style>
@@ -150,7 +276,9 @@ def slowbro_status() -> None:
             white-space: nowrap;
             z-index: 999;
         }}
+        {_dev_menu_css}
         </style>
+        {_dev_menu_html}
         """,
         unsafe_allow_html=True,
     )

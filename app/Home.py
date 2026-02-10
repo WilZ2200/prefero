@@ -174,18 +174,10 @@ with _bro_col2:
     )
 
     st.markdown(
-        "<div style='display:flex; gap:12px;'>"
-        # ── Buy Me a Coffee ──
         f"<a href='{_coffee_url}' target='_blank' style='"
-        f"{_btn_style} flex:1; background:#FFDD00; color:#000;'>"
+        f"{_btn_style} max-width:300px; background:#FFDD00; color:#000;'>"
         f"<img src='{_bmc_logo}' width='22' style='flex-shrink:0;'/>"
-        f"Buy Slowbro a Coffee</a>"
-        # ── WeChat ──
-        f"<div style='{_btn_style} flex:1; background:#07C160; color:#fff;' "
-        f"id='wechat-tip-btn'>"
-        f"<img src='{_wechat_logo}' width='22' style='flex-shrink:0;'/>"
-        f"微信打赏</div>"
-        "</div>",
+        f"Buy Slowbro a Coffee</a>",
         unsafe_allow_html=True,
     )
 

@@ -223,12 +223,22 @@ try:
         log_data = []
         for r in log_rows:
             ts = datetime.fromtimestamp(r["timestamp"], tz=timezone.utc)
-            log_data.append({
+            row = {
                 "Timestamp": ts.strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "Username": r["username"],
                 "Action": r["action"],
                 "Details": r["details"],
-            })
+            }
+            # IP/geo columns (may not exist in older records)
+            ip_val = r["ip_address"] if "ip_address" in r.keys() else ""
+            country_val = r["country"] if "country" in r.keys() else ""
+            region_val = r["region"] if "region" in r.keys() else ""
+            vpn_val = r["is_vpn"] if "is_vpn" in r.keys() else 0
+            row["IP"] = ip_val or ""
+            row["Country"] = country_val or ""
+            row["Region"] = region_val or ""
+            row["VPN"] = "Yes" if vpn_val else ""
+            log_data.append(row)
         log_df = pd.DataFrame(log_data)
         st.dataframe(log_df, use_container_width=True, hide_index=True)
 
@@ -243,6 +253,44 @@ try:
         st.info("No activity found for the selected filters.")
 except Exception as _exc:
     st.info(f"Activity timeline not available: {_exc}")
+
+# ── 2a-2. Geographic Overview ──────────────────────────────────
+
+st.header("Geographic Overview")
+
+try:
+    geo_rows = conn.execute(
+        "SELECT country, region, ip_address, is_vpn, COUNT(*) as cnt "
+        "FROM activity_log WHERE country != '' GROUP BY country ORDER BY cnt DESC"
+    ).fetchall()
+    if geo_rows:
+        geo_data = [
+            {"Country": r["country"], "Activities": r["cnt"]}
+            for r in geo_rows
+        ]
+        geo_df = pd.DataFrame(geo_data)
+        g1, g2 = st.columns(2)
+        with g1:
+            st.dataframe(geo_df, use_container_width=True, hide_index=True)
+        with g2:
+            if _has_plotly:
+                fig_geo = px.pie(geo_df, names="Country", values="Activities", title="Activities by Country")
+                st.plotly_chart(fig_geo, use_container_width=True, key="admin_geo_pie")
+
+    vpn_total = conn.execute(
+        "SELECT SUM(is_vpn) as vpn_cnt, COUNT(*) as total "
+        "FROM activity_log WHERE ip_address != ''"
+    ).fetchone()
+    if vpn_total and vpn_total["total"] > 0:
+        vpn_count = int(vpn_total["vpn_cnt"] or 0)
+        total_with_ip = int(vpn_total["total"])
+        v1, v2 = st.columns(2)
+        v1.metric("Tracked requests (with IP)", total_with_ip)
+        v2.metric("Suspected VPN/Datacenter", f"{vpn_count} ({vpn_count/total_with_ip*100:.1f}%)" if total_with_ip else "0")
+    else:
+        st.info("No geographic data yet. IP tracking starts collecting data on the next user activity.")
+except Exception as _exc:
+    st.info(f"Geographic data not available: {_exc}")
 
 # ── 2b. Model Usage Stats ───────────────────────────────────────
 

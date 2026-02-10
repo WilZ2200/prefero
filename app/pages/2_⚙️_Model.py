@@ -333,6 +333,25 @@ elif model_type == "gmnl":
         "Nests both S-MNL (pure scale) and MMNL as special cases."
     )
 
+    gmnl_variant_label = st.selectbox(
+        "GMNL variant",
+        ["GMNL (General)", "S-MNL (gamma=0)", "GMNL-II (gamma=1)"],
+        key="gmnl_variant_select",
+        help=(
+            "**GMNL (General):** gamma is freely estimated (Fiebig et al. 2010). "
+            "**S-MNL:** gamma fixed at 0 — pure scale heterogeneity only; "
+            "all taste variation comes from individual scale differences. "
+            "**GMNL-II:** gamma fixed at 1 — scale multiplies the full "
+            "individual-specific beta (mean + deviation)."
+        ),
+    )
+    _gmnl_variant_map = {
+        "GMNL (General)": "general",
+        "S-MNL (gamma=0)": "s-mnl",
+        "GMNL-II (gamma=1)": "gmnl-ii",
+    }
+    gmnl_variant = _gmnl_variant_map[gmnl_variant_label]
+
     st.markdown("**Distribution assumptions**")
     st.caption("Set distributions for each variable. At least one random variable is required.")
     with st.expander("What do the distribution options mean?"):
@@ -369,11 +388,13 @@ elif model_type == "gmnl":
 
     with st.expander("About GMNL scale parameters"):
         st.markdown(
-            "The GMNL model estimates three additional parameters:\n"
+            "The GMNL model estimates additional scale parameters:\n"
             "- **tau** (scale mean): controls the average scale of utility.\n"
             "- **sigma_tau** (scale SD): individual variation in scale.\n"
             "- **gamma** (mixing, 0-1): gamma=0 is pure scale heterogeneity (S-MNL), "
-            "gamma=1 is GMNL-II (closest to standard MMNL)."
+            "gamma=1 is GMNL-II (closest to standard MMNL).\n\n"
+            "When using **S-MNL** or **GMNL-II**, gamma is fixed and not estimated — "
+            "reducing the parameter count by 1."
         )
 
     # ── Correlation structure for GMNL ────────────────────────────────
@@ -577,6 +598,8 @@ else:  # latent_class
 if model_type not in ("mixed", "gmnl"):
     mxl_correlated = False
     mxl_correlation_groups = None
+if model_type != "gmnl":
+    gmnl_variant = "general"
 if model_type != "latent_class":
     lc_membership_cols = []
     lc_method = "em"
@@ -939,6 +962,9 @@ def _suggest_model_name() -> str:
     """Build a descriptive default name from the current model configuration."""
     prefix_map = {"conditional": "CL", "mixed": "MXL", "gmnl": "GMNL", "latent_class": "LC"}
     prefix = prefix_map[model_type]
+    if model_type == "gmnl" and gmnl_variant != "general":
+        variant_labels = {"s-mnl": "S-MNL", "gmnl-ii": "GMNL-II"}
+        prefix = variant_labels.get(gmnl_variant, prefix)
     parts: list[str] = [prefix]
 
     if model_type in ("mixed", "gmnl"):
@@ -1071,9 +1097,10 @@ def _build_param_names() -> list[dict[str, str]]:
             rows.append({"#": str(idx), "Parameter": "raw_sigma_tau",
                          "Description": "Scale SD (raw, softplus-transformed)"})
             idx += 1
-            rows.append({"#": str(idx), "Parameter": "raw_gamma",
-                         "Description": "Mixing parameter (raw, sigmoid -> [0,1])"})
-            idx += 1
+            if gmnl_variant == "general":
+                rows.append({"#": str(idx), "Parameter": "raw_gamma",
+                             "Description": "Mixing parameter (raw, sigmoid -> [0,1])"})
+                idx += 1
 
     elif model_type == "latent_class":
         for q in range(1, n_classes + 1):
@@ -1188,6 +1215,7 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         interactions=_het_interactions,
         correlated=mxl_correlated,
         correlation_groups=mxl_correlation_groups,
+        gmnl_variant=gmnl_variant,
         bws_worst_col=bws_worst_col if bws_mode else None,
         estimate_lambda_w=bws_estimate_lambda_w if bws_mode else True,
         n_classes=int(n_classes),
@@ -1199,6 +1227,16 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         n_starts=int(n_starts),
         custom_start=_parsed_custom_start,
     )
+
+    # ── Early validation: BWS requires J >= 3 ──────────────────
+    if bws_mode:
+        _n_alts_per_task = df.groupby([id_col, task_col]).size()
+        if _n_alts_per_task.min() < 3:
+            st.error(
+                "BWS requires at least 3 alternatives per task (J >= 3). "
+                f"Your data has tasks with only {_n_alts_per_task.min()} alternatives."
+            )
+            st.stop()
 
     # Pass the original DataFrame; backend handles dummy expansion
     est_df = df
@@ -1273,10 +1311,14 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         st.error(f"Estimation failed: {exc}")
         try:
             from community_db import log_activity
+            import traceback as _tb
+            _tb_str = _tb.format_exc()
             log_activity(st.session_state.get("username", "anonymous"), "estimation_error", f"model={model_type}, error={str(exc)[:200]}")
+            logger_msg = f"Estimation error: {_tb_str}"
+            import logging
+            logging.getLogger("prefero").warning(logger_msg)
         except Exception:
             pass
-        st.exception(exc)
         st.stop()
 
     st.session_state["_estimation_running"] = False

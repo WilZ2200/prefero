@@ -38,6 +38,7 @@ def estimate_dataframe(
     estimate_lambda_w: bool = True,
     lc_method: str = "em",
     custom_start: list[float] | None = None,
+    fixed_gamma: float | None = None,
 ) -> PipelineResult:
     tensors = prepare_choice_tensors(df, spec, device=device)
 
@@ -94,6 +95,7 @@ def estimate_dataframe(
             bws_data=bws_data,
             correlated=correlated,
             correlation_groups=correlation_groups,
+            fixed_gamma=fixed_gamma,
         )
         return PipelineResult(
             tensors=tensors,
@@ -213,6 +215,7 @@ def estimate_from_spec(
         estimate_lambda_w=spec.estimate_lambda_w,
         lc_method=spec.lc_method,
         custom_start=spec.custom_start,
+        fixed_gamma={"s-mnl": 0.0, "gmnl-ii": 1.0}.get(spec.gmnl_variant),
     )
     result.expanded_spec = model_spec
     result.expanded_df = df
