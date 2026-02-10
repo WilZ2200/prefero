@@ -71,7 +71,29 @@ for col, (num, title, desc, icon) in zip(cols, steps):
             st.caption(desc)
 
 st.divider()
-st.info("Use the **sidebar** to navigate between pages.")
+
+# ── Begin the journey ─────────────────────────────────────────────
+_NAV_IMG = (
+    "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites"
+    "/pokemon/other/official-artwork/80.png"
+)
+
+_j1, _j2 = st.columns([1, 4])
+with _j1:
+    st.image(_NAV_IMG, width=80)
+with _j2:
+    st.markdown(
+        "<p style='margin:0; color:gray; font-size:0.85em;'>"
+        "Ready? Slowbro will walk you through every step.</p>",
+        unsafe_allow_html=True,
+    )
+    if st.button(
+        "📊 Begin the journey with Slowbro",
+        key="_nav_begin",
+        use_container_width=True,
+        type="primary",
+    ):
+        st.switch_page("pages/1_📊_Data.py")
 
 # ── The Tale of Slowbro ──────────────────────────────────────────
 st.divider()
@@ -135,27 +157,3 @@ with _bro_col2:
     # ── Buy me a coffee placeholder ──
     # TODO: Replace with actual Buy Me a Coffee widget/link
     st.button("☕ Buy Slowbro a Coffee", disabled=True, help="Coming soon!")
-
-# ── Begin the journey ─────────────────────────────────────────────
-_NAV_IMG = (
-    "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites"
-    "/pokemon/other/official-artwork/80.png"
-)
-
-st.divider()
-_j1, _j2 = st.columns([1, 4])
-with _j1:
-    st.image(_NAV_IMG, width=80)
-with _j2:
-    st.markdown(
-        "<p style='margin:0; color:gray; font-size:0.85em;'>"
-        "Ready? Slowbro will walk you through every step.</p>",
-        unsafe_allow_html=True,
-    )
-    if st.button(
-        "📊 Begin the journey with Slowbro",
-        key="_nav_begin",
-        use_container_width=True,
-        type="primary",
-    ):
-        st.switch_page("pages/1_📊_Data.py")
