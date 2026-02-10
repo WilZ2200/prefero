@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from utils import init_session_state, language_banner, sidebar_branding
+from utils import init_session_state, language_banner, sidebar_branding, slowbro_next_step
 
 st.set_page_config(
     page_title="分析侠 Prefero - DCE Analysis Tool",
@@ -40,10 +40,13 @@ st.title("分析侠  Prefero")
 st.caption("Discrete Choice Experiment Analysis")
 st.markdown(
     """
-    Welcome to **分析侠 Prefero**, an interactive tool for specifying,
-    estimating, and comparing discrete-choice models.  Upload your own data
-    or generate simulated choice experiments — then walk through the guided
-    workflow below.
+    Welcome to **分析侠 Prefero**, a **completely code-free** interactive tool
+    for specifying, estimating, and comparing discrete-choice models.
+
+    No programming required — just upload your data, point and click, and let
+    Slowbro handle the heavy lifting. Whether you're a seasoned econometrician
+    or running your first choice experiment, everything works through this
+    guided interface.
     """
 )
 
@@ -132,3 +135,27 @@ with _bro_col2:
     # ── Buy me a coffee placeholder ──
     # TODO: Replace with actual Buy Me a Coffee widget/link
     st.button("☕ Buy Slowbro a Coffee", disabled=True, help="Coming soon!")
+
+# ── Begin the journey ─────────────────────────────────────────────
+_NAV_IMG = (
+    "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites"
+    "/pokemon/other/official-artwork/80.png"
+)
+
+st.divider()
+_j1, _j2 = st.columns([1, 4])
+with _j1:
+    st.image(_NAV_IMG, width=80)
+with _j2:
+    st.markdown(
+        "<p style='margin:0; color:gray; font-size:0.85em;'>"
+        "Ready? Slowbro will walk you through every step.</p>",
+        unsafe_allow_html=True,
+    )
+    if st.button(
+        "📊 Begin the journey with Slowbro",
+        key="_nav_begin",
+        use_container_width=True,
+        type="primary",
+    ):
+        st.switch_page("pages/1_📊_Data.py")
