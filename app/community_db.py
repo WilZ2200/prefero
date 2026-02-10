@@ -394,12 +394,33 @@ def create_user(username: str, email: str = "") -> User:
 # ---------------------------------------------------------------------------
 
 
-def log_activity(username: str, action: str, details: str = "") -> None:
-    """Record an activity event with IP geolocation."""
+def _session_geo() -> tuple[str, dict]:
+    """Return (ip, geo_dict) for the current session, querying API only once.
+
+    Caches results in Streamlit session state so that a single login session
+    only makes one geolocation API call.
+    """
     try:
-        conn = _get_conn()
+        import streamlit as st
+        cached = st.session_state.get("_geo_cached")
+        if cached is not None:
+            return cached  # type: ignore[return-value]
         ip = get_client_ip()
         geo = geolocate_ip(ip) if ip else {}
+        st.session_state["_geo_cached"] = (ip, geo)
+        return ip, geo
+    except Exception:
+        # Outside Streamlit context (e.g. tests) — fall back to direct lookup
+        ip = get_client_ip()
+        geo = geolocate_ip(ip) if ip else {}
+        return ip, geo
+
+
+def log_activity(username: str, action: str, details: str = "") -> None:
+    """Record an activity event with IP geolocation (looked up once per session)."""
+    try:
+        conn = _get_conn()
+        ip, geo = _session_geo()
         conn.execute(
             "INSERT INTO activity_log "
             "(timestamp, username, action, details, ip_address, country, region, is_vpn) "
