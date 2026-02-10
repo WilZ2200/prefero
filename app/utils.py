@@ -178,12 +178,12 @@ def slowbro_status() -> None:
         "/pokemon/other/official-artwork/80.png"
     )
 
-    # Always hide Admin from sidebar; show ⋯ menu only for admin users
+    # Always hide Admin from sidebar; show ⋮ menu only for admin users
     _dev_menu_html = ""
     if _is_admin_user():
         _dev_menu_html = """
         <div class="dev-entry">
-            <div class="dev-entry-btn">⋯</div>
+            <div class="dev-entry-btn">⋮</div>
             <div class="dev-entry-dropdown">
                 <a href="/🔒_Admin" target="_self">🔧 Developer Entry</a>
             </div>
@@ -201,7 +201,7 @@ def slowbro_status() -> None:
         [data-testid="stSidebarNav"] a[href*="Admin"] {{
             display: none !important;
         }}
-        /* Developer entry ⋯ menu (HTML only rendered for admin) */
+        /* Developer entry ⋮ menu (HTML only rendered for admin) */
         .dev-entry {{
             position: fixed;
             top: 10px;
