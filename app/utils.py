@@ -71,11 +71,18 @@ def _check_session_timeout() -> None:
     if not st.session_state.get("authenticated"):
         return  # not logged in → nothing to expire
 
+    # Only check if user was previously admitted to the queue.
+    # Without this, freshly authenticated users who haven't entered
+    # the queue yet would be incorrectly treated as evicted.
+    if not st.session_state.get("_queue_admitted"):
+        return
+
     if not is_session_active():
         # Session was evicted — clear auth state
         for key in ("authenticated", "auth_email", "username", "user_id"):
             st.session_state[key] = _SESSION_DEFAULTS.get(key, "")
         st.session_state.pop("_queue_session_id", None)
+        st.session_state.pop("_queue_admitted", None)
         st.warning("Your session expired due to inactivity. Please sign in again.")
         st.stop()
 
@@ -91,6 +98,7 @@ def init_session_state() -> None:
         st.stop()
     require_queue_slot()
     queue_heartbeat()
+    st.session_state["_queue_admitted"] = True
 
 
 def data_is_loaded() -> bool:
