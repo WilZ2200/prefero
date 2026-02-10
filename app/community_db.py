@@ -44,19 +44,41 @@ def get_client_ip() -> str | None:
         return None
 
 
-def geolocate_ip(ip: str | None) -> dict:
-    """Look up country, region, org, VPN status for an IP via ip-api.com.
+def _lookup_vpnapi(ip: str) -> dict | None:
+    """Try vpnapi.io (HTTPS, free 1k/day, accurate VPN detection).
 
-    Free tier: 45 req/min, no key needed, returns proxy/hosting fields.
-    Returns dict with keys: country, region, city, org, is_vpn.
-    Results are cached in-memory.
+    Requires VPNAPI_KEY env var. Returns result dict or None on failure.
     """
-    if not ip:
-        return {}
-    if ip in _geo_cache:
-        return _geo_cache[ip]
+    import os
+    api_key = os.environ.get("VPNAPI_KEY", "")
+    if not api_key:
+        return None
+    try:
+        import requests
+        resp = requests.get(
+            f"https://vpnapi.io/api/{ip}?key={api_key}",
+            timeout=4,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            sec = data.get("security", {})
+            loc = data.get("location", {})
+            net = data.get("network", {})
+            return {
+                "country": loc.get("country", ""),
+                "country_code": loc.get("country_code", ""),
+                "region": loc.get("region", ""),
+                "city": loc.get("city", ""),
+                "org": net.get("autonomous_system_organization", ""),
+                "is_vpn": bool(sec.get("vpn") or sec.get("proxy") or sec.get("tor") or sec.get("relay")),
+            }
+    except Exception as exc:
+        logger.debug("vpnapi.io lookup failed for %s: %s", ip, exc)
+    return None
 
-    result: dict = {}
+
+def _lookup_ipapi(ip: str) -> dict | None:
+    """Fallback: ip-api.com (HTTP, free 45/min, basic proxy detection)."""
     try:
         import requests
         resp = requests.get(
@@ -66,7 +88,7 @@ def geolocate_ip(ip: str | None) -> dict:
         if resp.status_code == 200:
             data = resp.json()
             if data.get("status") == "success":
-                result = {
+                return {
                     "country": data.get("country", ""),
                     "country_code": data.get("countryCode", ""),
                     "region": data.get("regionName", ""),
@@ -75,7 +97,23 @@ def geolocate_ip(ip: str | None) -> dict:
                     "is_vpn": bool(data.get("proxy") or data.get("hosting")),
                 }
     except Exception as exc:
-        logger.debug("Geo lookup failed for %s: %s", ip, exc)
+        logger.debug("ip-api.com lookup failed for %s: %s", ip, exc)
+    return None
+
+
+def geolocate_ip(ip: str | None) -> dict:
+    """Look up country, region, org, VPN status for an IP.
+
+    Tries vpnapi.io first (if VPNAPI_KEY is set), falls back to ip-api.com.
+    Returns dict with keys: country, region, city, org, is_vpn.
+    Results are cached in-memory.
+    """
+    if not ip:
+        return {}
+    if ip in _geo_cache:
+        return _geo_cache[ip]
+
+    result = _lookup_vpnapi(ip) or _lookup_ipapi(ip) or {}
 
     # Cache result (even empty, to avoid repeated failed lookups)
     if len(_geo_cache) < _GEO_CACHE_MAX:
