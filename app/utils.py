@@ -178,16 +178,13 @@ def slowbro_status() -> None:
         "/pokemon/other/official-artwork/80.png"
     )
 
-    # Always hide Admin from sidebar; show ⋮ menu only for admin users
-    _dev_menu_html = ""
-    if _is_admin_user():
-        _dev_menu_html = """
-        <div class="dev-entry">
-            <div class="dev-entry-btn">⋮</div>
-            <div class="dev-entry-dropdown">
-                <a href="/🔒_Admin" target="_self">🔧 Developer Entry</a>
-            </div>
-        </div>
+    # Hide Admin from sidebar unless developer mode is active
+    _hide_admin_css = ""
+    if not st.session_state.get("_dev_mode_active"):
+        _hide_admin_css = """
+        [data-testid="stSidebarNav"] a[href*="Admin"] {
+            display: none !important;
+        }
         """
 
     st.markdown(
@@ -197,63 +194,7 @@ def slowbro_status() -> None:
         [data-testid="stStatusWidget"] {{
             display: none !important;
         }}
-        /* Always hide Admin page from sidebar nav */
-        [data-testid="stSidebarNav"] a[href*="Admin"] {{
-            display: none !important;
-        }}
-        /* Developer entry ⋮ menu (HTML only rendered for admin) */
-        .dev-entry {{
-            position: fixed;
-            top: 10px;
-            right: 14px;
-            z-index: 1001;
-        }}
-        .dev-entry-btn {{
-            background: rgba(50,50,50,0.7);
-            border: none;
-            color: #999;
-            font-size: 16px;
-            cursor: pointer;
-            border-radius: 6px;
-            width: 30px;
-            height: 30px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: background 0.15s;
-        }}
-        .dev-entry-btn:hover {{
-            background: rgba(80,80,80,0.9);
-            color: #ddd;
-        }}
-        .dev-entry-dropdown {{
-            display: none;
-            position: absolute;
-            right: 0;
-            top: 34px;
-            background: #1e1e1e;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 4px 0;
-            min-width: 170px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-        }}
-        .dev-entry:hover .dev-entry-dropdown {{
-            display: block;
-        }}
-        .dev-entry-dropdown a {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 14px;
-            color: #ccc;
-            text-decoration: none;
-            font-size: 0.82rem;
-        }}
-        .dev-entry-dropdown a:hover {{
-            background: rgba(255,255,255,0.08);
-            color: #fff;
-        }}
+        {_hide_admin_css}
         /* Slowbro pill — injected into Streamlit's fixed header via ::after */
         [data-testid="stHeader"]::after {{
             content: "Slowbro is resting...";
@@ -274,7 +215,6 @@ def slowbro_status() -> None:
             z-index: 999;
         }}
         </style>
-        {_dev_menu_html}
         """,
         unsafe_allow_html=True,
     )
@@ -296,6 +236,21 @@ def sidebar_branding() -> None:
         st.sidebar.success(f"Data loaded: {st.session_state.data_label}")
     else:
         st.sidebar.info("No data loaded yet.")
+
+    # Developer mode prompt (admin users only)
+    if _is_admin_user() and not st.session_state.get("_dev_mode_active"):
+        import os
+        _dev_key = os.environ.get("PREFERO_ADMIN_PASSWORD", "")
+        if _dev_key:
+            st.sidebar.divider()
+            with st.sidebar.expander("Developer Mode"):
+                key_input = st.text_input("Developer key", type="password", key="_sidebar_dev_key")
+                if st.button("Unlock", key="_sidebar_dev_unlock", use_container_width=True):
+                    if key_input == _dev_key:
+                        st.session_state["_dev_mode_active"] = True
+                        st.rerun()
+                    else:
+                        st.error("Incorrect key.")
 
 
 def require_data() -> None:

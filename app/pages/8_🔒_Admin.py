@@ -25,24 +25,10 @@ from utils import init_session_state, sidebar_branding  # noqa: E402
 init_session_state()
 sidebar_branding()
 
-# ── Developer key gate ─────────────────────────────────────────────
+# ── Developer mode gate ────────────────────────────────────────────
 
-_dev_key = os.environ.get("PREFERO_ADMIN_PASSWORD", "")
-
-if not _dev_key:
-    st.error("Developer mode is not configured.")
-    st.stop()
-
-if not st.session_state.get("_admin_authenticated"):
-    st.title("Developer Mode")
-    st.caption("Enter the developer key to continue.")
-    key_input = st.text_input("Developer key", type="password", key="_dev_key_input")
-    if st.button("Unlock", use_container_width=True):
-        if key_input == _dev_key:
-            st.session_state["_admin_authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Incorrect developer key.")
+if not st.session_state.get("_dev_mode_active"):
+    st.error("Access denied. Enable Developer Mode from the sidebar first.")
     st.stop()
 
 # ── Page header ────────────────────────────────────────────────────
