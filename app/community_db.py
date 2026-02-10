@@ -185,7 +185,7 @@ def _save_users_to_hf() -> None:
 
 
 def _save_activity_to_hf() -> None:
-    """Persist recent activity log to the HF dataset repo."""
+    """Persist activity log to the HF dataset repo."""
     token = _hf_token()
     if not token:
         return
@@ -195,7 +195,7 @@ def _save_activity_to_hf() -> None:
 
         conn = _get_conn()
         rows = conn.execute(
-            "SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT 500"
+            "SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT 5000"
         ).fetchall()
         logs = [dict(r) for r in rows]
 
@@ -208,8 +208,73 @@ def _save_activity_to_hf() -> None:
             path_or_fileobj=tmp, path_in_repo="activity_log.json",
             repo_id=_HF_DATASET_REPO, repo_type="dataset",
         )
+        logger.info("Synced %d activity logs to HF dataset", len(logs))
     except Exception as exc:
         logger.warning("Failed to save activity to HF: %s", exc)
+
+
+def _load_activity_from_hf() -> list[dict]:
+    """Load activity log from HF dataset repo. Returns [] on failure."""
+    token = _hf_token()
+    if not token:
+        return []
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(
+            repo_id=_HF_DATASET_REPO, filename="activity_log.json",
+            repo_type="dataset", token=token,
+        )
+        with open(path) as f:
+            data = json.load(f)
+        return data.get("logs", [])
+    except Exception as exc:
+        logger.debug("Failed to load activity from HF: %s", exc)
+        return []
+
+
+_activity_synced = False
+
+
+def _sync_activity_from_hf() -> None:
+    """Restore activity log from HF dataset on startup (once)."""
+    global _activity_synced
+    if _activity_synced:
+        return
+    _activity_synced = True
+
+    logs = _load_activity_from_hf()
+    if not logs:
+        return
+
+    conn = _get_conn()
+    restored = 0
+    for entry in logs:
+        try:
+            # Use timestamp + username + action as uniqueness check
+            existing = conn.execute(
+                "SELECT 1 FROM activity_log WHERE timestamp = ? AND username = ? AND action = ?",
+                (entry["timestamp"], entry["username"], entry["action"]),
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                "INSERT INTO activity_log "
+                "(timestamp, username, action, details, ip_address, country, region, is_vpn) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry["timestamp"], entry["username"], entry["action"],
+                    entry.get("details", ""),
+                    entry.get("ip_address", ""),
+                    entry.get("country", ""),
+                    entry.get("region", ""),
+                    entry.get("is_vpn", 0),
+                ),
+            )
+            restored += 1
+        except Exception:
+            pass
+    conn.commit()
+    logger.info("Restored %d activity logs from HF dataset", restored)
 
 
 def _sync_users_from_hf() -> None:
@@ -318,8 +383,9 @@ def init_db() -> None:
     except sqlite3.OperationalError:
         pass
     conn.commit()
-    # Load persisted users from HF on first startup
+    # Load persisted data from HF on first startup
     _sync_users_from_hf()
+    _sync_activity_from_hf()
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +500,11 @@ def log_activity(username: str, action: str, details: str = "") -> None:
             ),
         )
         conn.commit()
+        # Async backup to HF (non-blocking, every 10th write)
+        _activity_write_count = getattr(log_activity, "_count", 0) + 1
+        log_activity._count = _activity_write_count  # type: ignore[attr-defined]
+        if _activity_write_count % 10 == 0:
+            threading.Thread(target=_save_activity_to_hf, daemon=True).start()
     except Exception as exc:
         logger.warning("Failed to log activity: %s", exc)
 
