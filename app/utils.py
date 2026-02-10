@@ -178,69 +178,9 @@ def slowbro_status() -> None:
         "/pokemon/other/official-artwork/80.png"
     )
 
-    # Build optional developer entry menu (admin only)
-    _dev_menu_css = ""
+    # Always hide Admin from sidebar; show ⋯ menu only for admin users
     _dev_menu_html = ""
     if _is_admin_user():
-        _dev_menu_css = """
-        /* Hide Admin page from sidebar nav */
-        [data-testid="stSidebarNav"] a[href*="Admin"] {
-            display: none !important;
-        }
-        /* Developer entry ⋯ menu */
-        .dev-entry {
-            position: fixed;
-            top: 10px;
-            right: 14px;
-            z-index: 1001;
-        }
-        .dev-entry-btn {
-            background: rgba(50,50,50,0.7);
-            border: none;
-            color: #999;
-            font-size: 16px;
-            cursor: pointer;
-            border-radius: 6px;
-            width: 30px;
-            height: 30px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: background 0.15s;
-        }
-        .dev-entry-btn:hover {
-            background: rgba(80,80,80,0.9);
-            color: #ddd;
-        }
-        .dev-entry-dropdown {
-            display: none;
-            position: absolute;
-            right: 0;
-            top: 34px;
-            background: #1e1e1e;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 4px 0;
-            min-width: 170px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-        }
-        .dev-entry:hover .dev-entry-dropdown {
-            display: block;
-        }
-        .dev-entry-dropdown a {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 14px;
-            color: #ccc;
-            text-decoration: none;
-            font-size: 0.82rem;
-        }
-        .dev-entry-dropdown a:hover {
-            background: rgba(255,255,255,0.08);
-            color: #fff;
-        }
-        """
         _dev_menu_html = """
         <div class="dev-entry">
             <div class="dev-entry-btn">⋯</div>
@@ -256,6 +196,63 @@ def slowbro_status() -> None:
         /* Hide default Streamlit status widget entirely */
         [data-testid="stStatusWidget"] {{
             display: none !important;
+        }}
+        /* Always hide Admin page from sidebar nav */
+        [data-testid="stSidebarNav"] a[href*="Admin"] {{
+            display: none !important;
+        }}
+        /* Developer entry ⋯ menu (HTML only rendered for admin) */
+        .dev-entry {{
+            position: fixed;
+            top: 10px;
+            right: 14px;
+            z-index: 1001;
+        }}
+        .dev-entry-btn {{
+            background: rgba(50,50,50,0.7);
+            border: none;
+            color: #999;
+            font-size: 16px;
+            cursor: pointer;
+            border-radius: 6px;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s;
+        }}
+        .dev-entry-btn:hover {{
+            background: rgba(80,80,80,0.9);
+            color: #ddd;
+        }}
+        .dev-entry-dropdown {{
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 34px;
+            background: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 4px 0;
+            min-width: 170px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }}
+        .dev-entry:hover .dev-entry-dropdown {{
+            display: block;
+        }}
+        .dev-entry-dropdown a {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            color: #ccc;
+            text-decoration: none;
+            font-size: 0.82rem;
+        }}
+        .dev-entry-dropdown a:hover {{
+            background: rgba(255,255,255,0.08);
+            color: #fff;
         }}
         /* Slowbro pill — injected into Streamlit's fixed header via ::after */
         [data-testid="stHeader"]::after {{
@@ -276,7 +273,6 @@ def slowbro_status() -> None:
             white-space: nowrap;
             z-index: 999;
         }}
-        {_dev_menu_css}
         </style>
         {_dev_menu_html}
         """,
