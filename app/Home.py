@@ -182,5 +182,5 @@ with _bro_col2:
     )
 
     if _wechat_qr:
-        with st.expander("扫码打赏 Slowbro 一杯咖啡", expanded=False):
+        with st.expander("微信扫码打赏", expanded=False):
             st.image(_wechat_qr, width=220)
