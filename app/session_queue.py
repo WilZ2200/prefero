@@ -4,7 +4,7 @@ Uses a module-level dict (shared across all Streamlit sessions within the
 same process) to track active users.  Thread-safe via a lock.
 
 Toggle with PREFERO_QUEUE_ENABLED env var ("true" to enable).
-Max concurrent users controlled by PREFERO_MAX_CONCURRENT (default 5).
+Max concurrent users controlled by PREFERO_MAX_CONCURRENT (default 2).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import streamlit as st
 # Configuration
 # ---------------------------------------------------------------------------
 
-_MAX_CONCURRENT = int(os.environ.get("PREFERO_MAX_CONCURRENT", "5"))
+_MAX_CONCURRENT = int(os.environ.get("PREFERO_MAX_CONCURRENT", "2"))
 _SESSION_TIMEOUT = 1800  # 30 minutes of inactivity → evicted
 
 
