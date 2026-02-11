@@ -1348,22 +1348,6 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         "estimation": estimation,
     })
 
-    # Save to profile button
-    _username = st.session_state.get("username", "")
-    if _username:
-        _n_saved = len(st.session_state.get("saved_models", []))
-        if _n_saved >= 10:
-            st.warning("You've reached the limit of 10 saved models. Delete one to save more.")
-        else:
-            if st.button("Save to Profile", key=f"_save_profile_{run_label}", type="secondary"):
-                from model_store import save_model, load_models
-                _entry = st.session_state.model_history[-1]
-                if save_model(_username, _entry):
-                    st.session_state.saved_models = load_models(_username)
-                    st.success(f"Model '{run_label}' saved to your profile!")
-                else:
-                    st.error("Could not save -- you may have reached the 10-model limit.")
-
     # Also store LC-specific result
     if model_type == "latent_class":
         st.session_state.lc_result = {
@@ -1393,6 +1377,33 @@ elif st.session_state.model_results is not None:
         _show_lc_results(est, label)
     else:
         _show_results(est, label, header_suffix=" (last run)")
+
+# ── Save to Profile button (always visible when results exist) ────
+if st.session_state.model_results is not None:
+    _username = st.session_state.get("username", "")
+    if _username:
+        _n_saved = len(st.session_state.get("saved_models", []))
+        if _n_saved >= 10:
+            st.warning("You've reached the limit of 10 saved models. Delete one from your profile to save more.")
+        else:
+            _cur_label = st.session_state.model_results.get("label", "model")
+            # Check if already saved
+            _already_saved = any(
+                sm.get("label") == _cur_label
+                for sm in st.session_state.get("saved_models", [])
+            )
+            if _already_saved:
+                st.info(f"Model **{_cur_label}** is already saved to your profile.")
+            else:
+                if st.button("💾 Save to Profile", key="_save_to_profile", type="primary", use_container_width=True):
+                    from model_store import save_model, load_models
+                    _entry = st.session_state.model_results
+                    if save_model(_username, _entry):
+                        st.session_state.saved_models = load_models(_username)
+                        st.success(f"Model '{_cur_label}' saved to your profile!")
+                        st.rerun()
+                    else:
+                        st.error("Could not save — you may have reached the 10-model limit.")
 
 # ── LC: BIC comparison tool ───────────────────────────────────────
 if model_type == "latent_class":
