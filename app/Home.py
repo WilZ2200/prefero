@@ -12,7 +12,7 @@ from utils import init_session_state, language_banner, sidebar_branding, slowbro
 st.set_page_config(
     page_title="分析侠 Prefero - DCE Analysis Tool",
     page_icon="🧮",
-    layout="wide",
+    layout="centered",
 )
 
 init_session_state()
