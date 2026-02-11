@@ -160,11 +160,7 @@ with _bro_col2:
     )
     # ── Buy Slowbro a coffee ──
     _coffee_url = os.environ.get("COFFEE_URL", "https://buymeacoffee.com/preferohz")
-    _wechat_qr_path = Path(__file__).resolve().parent / "wechat_qr.jpg"
-    _wechat_qr = str(_wechat_qr_path) if _wechat_qr_path.exists() else os.environ.get("WECHAT_PAY_QR_URL", "")
-
     _bmc_logo = "https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg"
-    _wechat_logo = "https://upload.wikimedia.org/wikipedia/en/thumb/f/ff/WeChat_logo.svg/154px-WeChat_logo.svg.png"
 
     _btn_style = (
         "display:flex; align-items:center; justify-content:center; "
@@ -180,7 +176,3 @@ with _bro_col2:
         f"Buy Slowbro a Coffee</a>",
         unsafe_allow_html=True,
     )
-
-    if _wechat_qr:
-        with st.expander("微信扫码打赏", expanded=False):
-            st.image(_wechat_qr, width=220)
