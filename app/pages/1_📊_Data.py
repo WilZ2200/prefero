@@ -9,6 +9,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(page_title="Prefero - Data", page_icon="📊", layout="wide")
+
 # ── path setup so we can import the backend ────────────────────────
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"

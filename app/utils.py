@@ -201,27 +201,7 @@ def slowbro_status() -> None:
         [data-testid="stStatusWidget"] {{
             display: none !important;
         }}
-        /* Keep header fixed at top when scrolling */
-        [data-testid="stHeader"] {{
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            right: 0 !important;
-            z-index: 1000 !important;
-        }}
-        /* Keep sidebar fixed when scrolling */
-        section[data-testid="stSidebar"] {{
-            position: fixed !important;
-            height: 100vh !important;
-            top: 0 !important;
-            left: 0 !important;
-            z-index: 999 !important;
-        }}
-        section[data-testid="stSidebar"] > div {{
-            height: 100vh !important;
-            overflow-y: auto !important;
-        }}
-        {_hide_admin_css}
+{_hide_admin_css}
         /* Slowbro pill — injected into Streamlit's fixed header via ::after */
         [data-testid="stHeader"]::after {{
             content: "Slowbro is resting...";
