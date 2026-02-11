@@ -30,7 +30,7 @@ from community_db import (  # noqa: E402
     post_count,
 )
 
-st.set_page_config(page_title="Prefero - Community", page_icon="💬", layout="centered")
+st.set_page_config(page_title="Prefero - Community", page_icon="💬", layout="wide")
 
 init_session_state()
 sidebar_branding()
