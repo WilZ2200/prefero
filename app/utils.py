@@ -143,8 +143,11 @@ def init_session_state() -> None:
     if not st.session_state.get("_saved_models_loaded"):
         username = st.session_state.get("username", "")
         if username:
-            from model_store import load_models
-            st.session_state.saved_models = load_models(username)
+            try:
+                from model_store import load_models
+                st.session_state.saved_models = load_models(username)
+            except Exception:
+                st.session_state.saved_models = []
             st.session_state._saved_models_loaded = True
     st.session_state["_queue_admitted"] = True
     _inject_activity_heartbeat()
@@ -251,19 +254,22 @@ def sidebar_branding() -> None:
             _sb_delete_idx: int | None = None
             for i, sm in enumerate(_saved):
                 est = sm.get("estimation")
-                _ll = f"{est.log_likelihood:.1f}" if est else "?"
-                _col_info, _col_del = st.columns([5, 1])
-                with _col_info:
-                    st.caption(f"**{sm.get('label', 'model')}** ({sm.get('model_type', '?')}) LL:{_ll}")
-                with _col_del:
-                    if st.button("✕", key=f"_sb_del_saved_{i}", help="Delete"):
-                        _sb_delete_idx = i
+                try:
+                    _ll = f"{est.log_likelihood:.1f}"
+                except Exception:
+                    _ll = "?"
+                st.caption(f"**{sm.get('label', 'model')}** ({sm.get('model_type', '?')}) LL:{_ll}")
+                if st.button("✕ Delete", key=f"_sb_del_saved_{i}"):
+                    _sb_delete_idx = i
             if _sb_delete_idx is not None:
                 _uname = st.session_state.get("username", "")
                 if _uname:
-                    from model_store import delete_saved_model, load_models
-                    if delete_saved_model(_uname, _sb_delete_idx):
-                        st.session_state.saved_models = load_models(_uname)
+                    try:
+                        from model_store import delete_saved_model, load_models
+                        if delete_saved_model(_uname, _sb_delete_idx):
+                            st.session_state.saved_models = load_models(_uname)
+                    except Exception:
+                        pass
                     st.rerun()
 
     # Developer mode prompt (admin users only)
