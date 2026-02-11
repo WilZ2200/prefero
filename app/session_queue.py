@@ -21,7 +21,7 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 
 _MAX_CONCURRENT = int(os.environ.get("PREFERO_MAX_CONCURRENT", "5"))
-_SESSION_TIMEOUT = 120  # 2 minutes of inactivity → evicted
+_SESSION_TIMEOUT = 1800  # 30 minutes of inactivity → evicted
 
 
 def _queue_enabled() -> bool:
@@ -212,7 +212,7 @@ def queue_gate() -> bool:
     # ── Session policy note ──
     st.warning(
         "**How the queue works:** Each user gets a seat for as long as "
-        "they're active. Sessions expire after **2 minutes** of inactivity "
+        "they're active. Sessions expire after **30 minutes** of inactivity "
         "to keep things moving — but if you're running a model, your seat "
         "is safe until estimation completes."
     )

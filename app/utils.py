@@ -26,6 +26,7 @@ _SESSION_DEFAULTS: dict[str, object] = {
     "lc_result": None,
     "lc_bic_comparison": None,
     "lc_best_q": None,
+    "saved_models": [],
     "authenticated": False,
     "auth_email": "",
     "username": "",
@@ -139,6 +140,12 @@ def init_session_state() -> None:
         st.stop()
     require_queue_slot()
     queue_heartbeat()
+    if not st.session_state.get("_saved_models_loaded"):
+        username = st.session_state.get("username", "")
+        if username:
+            from model_store import load_models
+            st.session_state.saved_models = load_models(username)
+            st.session_state._saved_models_loaded = True
     st.session_state["_queue_admitted"] = True
     _inject_activity_heartbeat()
     import inspect
@@ -194,6 +201,26 @@ def slowbro_status() -> None:
         [data-testid="stStatusWidget"] {{
             display: none !important;
         }}
+        /* Keep header fixed at top when scrolling */
+        [data-testid="stHeader"] {{
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            z-index: 1000 !important;
+        }}
+        /* Keep sidebar fixed when scrolling */
+        section[data-testid="stSidebar"] {{
+            position: fixed !important;
+            height: 100vh !important;
+            top: 0 !important;
+            left: 0 !important;
+            z-index: 999 !important;
+        }}
+        section[data-testid="stSidebar"] > div {{
+            height: 100vh !important;
+            overflow-y: auto !important;
+        }}
         {_hide_admin_css}
         /* Slowbro pill — injected into Streamlit's fixed header via ::after */
         [data-testid="stHeader"]::after {{
@@ -236,6 +263,28 @@ def sidebar_branding() -> None:
         st.sidebar.success(f"Data loaded: {st.session_state.data_label}")
     else:
         st.sidebar.info("No data loaded yet.")
+
+    # ── Saved models in sidebar ──
+    _saved = st.session_state.get("saved_models", [])
+    if _saved:
+        with st.sidebar.expander(f"Saved Models ({len(_saved)}/10)", expanded=False):
+            _sb_delete_idx: int | None = None
+            for i, sm in enumerate(_saved):
+                est = sm.get("estimation")
+                _ll = f"{est.log_likelihood:.1f}" if est else "?"
+                _col_info, _col_del = st.columns([5, 1])
+                with _col_info:
+                    st.caption(f"**{sm.get('label', 'model')}** ({sm.get('model_type', '?')}) LL:{_ll}")
+                with _col_del:
+                    if st.button("✕", key=f"_sb_del_saved_{i}", help="Delete"):
+                        _sb_delete_idx = i
+            if _sb_delete_idx is not None:
+                _uname = st.session_state.get("username", "")
+                if _uname:
+                    from model_store import delete_saved_model, load_models
+                    if delete_saved_model(_uname, _sb_delete_idx):
+                        st.session_state.saved_models = load_models(_uname)
+                    st.rerun()
 
     # Developer mode prompt (admin users only)
     if _is_admin_user() and not st.session_state.get("_dev_mode_active"):
@@ -290,11 +339,14 @@ def language_banner() -> None:
             0%   { transform: translateX(0%); }
             100% { transform: translateX(-50%); }
         }
+        .scroll-banner-wrap {
+            position: relative;
+            margin-bottom: 8px;
+        }
         .scroll-banner {
             overflow: hidden;
             white-space: nowrap;
             padding: 12px 0;
-            margin-bottom: 8px;
             border-top: 1px solid rgba(128,128,128,0.2);
             border-bottom: 1px solid rgba(128,128,128,0.2);
         }
@@ -309,6 +361,52 @@ def language_banner() -> None:
             padding: 0 16px;
         }
         .scroll-inner .zh { font-weight: 700; opacity: 1.0; font-size: 1.2rem; }
+        .banner-help {
+            position: absolute;
+            right: 6px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 10;
+        }
+        .banner-help-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: rgba(128,128,128,0.18);
+            color: rgba(128,128,128,0.7);
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: default;
+            user-select: none;
+            line-height: 1;
+        }
+        .banner-help-icon:hover {
+            background: rgba(128,128,128,0.30);
+            color: rgba(128,128,128,0.95);
+        }
+        .banner-help-tooltip {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 28px;
+            width: 260px;
+            padding: 12px 14px;
+            background: var(--background-color, #fff);
+            border: 1px solid rgba(128,128,128,0.2);
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+            white-space: normal;
+            font-size: 0.82rem;
+            line-height: 1.5;
+            color: var(--text-color, #444);
+            z-index: 100;
+        }
+        .banner-help:hover .banner-help-tooltip {
+            display: block;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -322,8 +420,20 @@ def language_banner() -> None:
 
     st.markdown(
         f"""
-        <div class="scroll-banner">
-            <div class="scroll-inner">{doubled}</div>
+        <div class="scroll-banner-wrap">
+            <div class="scroll-banner">
+                <div class="scroll-inner">{doubled}</div>
+            </div>
+            <div class="banner-help">
+                <div class="banner-help-icon">?</div>
+                <div class="banner-help-tooltip">
+                    The name <b>Prefero</b> is shown in many languages
+                    to celebrate the wonderful diversity of our users.
+                    Translations may not be perfectly accurate &mdash;
+                    if you spot an error, we would love to hear from you
+                    on the <b>Community</b> page!
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,

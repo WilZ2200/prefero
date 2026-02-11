@@ -3,9 +3,9 @@
 Stores users (username, email, join date) and posts (author, title, body,
 replies, timestamps).  Designed for single-instance deployment (HF Spaces).
 
-User accounts are persisted to a private HF Dataset repo
-(Wil2200/prefero-data) so they survive container restarts.
-Posts/replies are ephemeral (in-memory SQLite).
+User accounts, activity logs, and forum posts/replies are persisted to a
+private HF Dataset repo (Wil2200/prefero-data) so they survive container
+restarts.
 """
 
 from __future__ import annotations
@@ -302,6 +302,126 @@ def _sync_users_from_hf() -> None:
     conn.commit()
     logger.info("Loaded %d users from HF dataset into SQLite", len(users))
 
+
+# ---------------------------------------------------------------------------
+# HF Dataset persistence for forum posts/replies
+# ---------------------------------------------------------------------------
+
+_posts_synced = False  # only sync once per process
+
+
+def _save_posts_to_hf() -> None:
+    """Persist all posts and replies to the HF dataset repo."""
+    token = _hf_token()
+    if not token:
+        return
+    try:
+        from huggingface_hub import HfApi
+        import tempfile
+
+        conn = _get_conn()
+        post_rows = conn.execute(
+            "SELECT id, author_id, title, body, created_at, updated_at "
+            "FROM posts ORDER BY id"
+        ).fetchall()
+        posts = [dict(r) for r in post_rows]
+
+        reply_rows = conn.execute(
+            "SELECT id, post_id, author_id, body, created_at "
+            "FROM replies ORDER BY id"
+        ).fetchall()
+        replies = [dict(r) for r in reply_rows]
+
+        data = {"posts": posts, "replies": replies}
+        tmp = os.path.join(tempfile.gettempdir(), "prefero_forum_posts.json")
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+
+        api = HfApi(token=token)
+        api.upload_file(
+            path_or_fileobj=tmp, path_in_repo="forum_posts.json",
+            repo_id=_HF_DATASET_REPO, repo_type="dataset",
+        )
+        logger.info("Synced %d posts and %d replies to HF dataset", len(posts), len(replies))
+    except Exception as exc:
+        logger.warning("Failed to save posts to HF: %s", exc)
+
+
+def _load_posts_from_hf() -> dict:
+    """Load posts and replies from HF dataset repo. Returns {} on failure."""
+    token = _hf_token()
+    if not token:
+        logger.debug("No HF token — skipping posts sync")
+        return {}
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(
+            repo_id=_HF_DATASET_REPO, filename="forum_posts.json",
+            repo_type="dataset", token=token,
+        )
+        with open(path) as f:
+            data = json.load(f)
+        return data
+    except Exception as exc:
+        logger.debug("Failed to load posts from HF: %s", exc)
+        return {}
+
+
+def _sync_posts_from_hf() -> None:
+    """Restore forum posts and replies from HF dataset on startup (once)."""
+    global _posts_synced
+    if _posts_synced:
+        return
+    _posts_synced = True
+
+    data = _load_posts_from_hf()
+    if not data:
+        return
+
+    conn = _get_conn()
+    posts = data.get("posts", [])
+    replies = data.get("replies", [])
+
+    restored_posts = 0
+    for p in posts:
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM posts WHERE id = ?", (p["id"],)
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                "INSERT INTO posts (id, author_id, title, body, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (p["id"], p["author_id"], p["title"], p["body"],
+                 p["created_at"], p["updated_at"]),
+            )
+            restored_posts += 1
+        except Exception:
+            pass
+
+    restored_replies = 0
+    for r in replies:
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM replies WHERE id = ?", (r["id"],)
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                "INSERT INTO replies (id, post_id, author_id, body, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (r["id"], r["post_id"], r["author_id"], r["body"],
+                 r["created_at"]),
+            )
+            restored_replies += 1
+        except Exception:
+            pass
+
+    conn.commit()
+    logger.info("Restored %d posts and %d replies from HF dataset", restored_posts, restored_replies)
+
+
 # ---------------------------------------------------------------------------
 # Database path — persistent on HF Spaces at /data or fallback to app dir
 # ---------------------------------------------------------------------------
@@ -386,6 +506,7 @@ def init_db() -> None:
     # Load persisted data from HF on first startup
     _sync_users_from_hf()
     _sync_activity_from_hf()
+    _sync_posts_from_hf()
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +692,8 @@ def create_post(author_id: int, title: str, body: str) -> Post:
     )
     conn.commit()
     user = get_user_by_id(author_id)
+    # Persist to HF dataset repo (non-blocking)
+    threading.Thread(target=_save_posts_to_hf, daemon=True).start()
     return Post(
         id=cur.lastrowid,
         author_id=author_id,
@@ -665,6 +788,8 @@ def create_reply(post_id: int, author_id: int, body: str) -> Reply:
     )
     conn.commit()
     user = get_user_by_id(author_id)
+    # Persist to HF dataset repo (non-blocking)
+    threading.Thread(target=_save_posts_to_hf, daemon=True).start()
     return Reply(
         id=cur.lastrowid,
         post_id=post_id,

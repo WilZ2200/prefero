@@ -1348,6 +1348,22 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         "estimation": estimation,
     })
 
+    # Save to profile button
+    _username = st.session_state.get("username", "")
+    if _username:
+        _n_saved = len(st.session_state.get("saved_models", []))
+        if _n_saved >= 10:
+            st.warning("You've reached the limit of 10 saved models. Delete one to save more.")
+        else:
+            if st.button("Save to Profile", key=f"_save_profile_{run_label}", type="secondary"):
+                from model_store import save_model, load_models
+                _entry = st.session_state.model_history[-1]
+                if save_model(_username, _entry):
+                    st.session_state.saved_models = load_models(_username)
+                    st.success(f"Model '{run_label}' saved to your profile!")
+                else:
+                    st.error("Could not save -- you may have reached the 10-model limit.")
+
     # Also store LC-specific result
     if model_type == "latent_class":
         st.session_state.lc_result = {
@@ -1493,6 +1509,55 @@ if st.session_state.model_history:
         _cur = st.session_state.model_results
         if _cur is not None and _cur.get("label") == _deleted.get("label"):
             st.session_state.model_results = None
+        st.rerun()
+
+# ── Saved models from profile ──────────────────────────────────
+_saved = st.session_state.get("saved_models", [])
+if _saved:
+    st.divider()
+    st.subheader("Saved Models (Profile)")
+    st.caption("These models are saved to your profile and persist across sessions.")
+    _profile_delete_idx: int | None = None
+    _profile_load_idx: int | None = None
+    for i, sm in enumerate(_saved):
+        est = sm.get("estimation")
+        _info_c, _load_c, _del_c = st.columns([5, 1, 1])
+        with _info_c:
+            _saved_at = sm.get("saved_at", "")
+            if _saved_at:
+                _saved_at = _saved_at[:10]  # just date
+            st.markdown(
+                f"**{i+1}. {sm.get('label', 'model')}** ({sm.get('model_type', '?')}) "
+                f"-- LL: {est.log_likelihood:.3f}, AIC: {est.aic:.2f}, BIC: {est.bic:.2f} "
+                f"<span style='color:gray;font-size:0.8em;'>({_saved_at})</span>",
+                unsafe_allow_html=True,
+            )
+        with _load_c:
+            if st.button("Load", key=f"_load_saved_{i}"):
+                _profile_load_idx = i
+        with _del_c:
+            if st.button("Delete", key=f"_del_saved_{i}"):
+                _profile_delete_idx = i
+
+    if _profile_load_idx is not None:
+        _loaded = _saved[_profile_load_idx]
+        st.session_state.model_results = {
+            "spec": _loaded.get("spec"),
+            "full_spec": _loaded.get("full_spec"),
+            "model_type": _loaded.get("model_type"),
+            "estimation": _loaded["estimation"],
+            "label": _loaded.get("label"),
+            "expanded_df": None,
+        }
+        if _loaded not in st.session_state.model_history:
+            st.session_state.model_history.append(_loaded)
+        st.rerun()
+
+    if _profile_delete_idx is not None:
+        _username = st.session_state.get("username", "")
+        from model_store import delete_saved_model, load_models
+        if delete_saved_model(_username, _profile_delete_idx):
+            st.session_state.saved_models = load_models(_username)
         st.rerun()
 
 slowbro_next_step("pages/2_⚙️_Model.py")
