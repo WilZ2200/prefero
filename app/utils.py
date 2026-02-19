@@ -35,12 +35,7 @@ _SESSION_DEFAULTS: dict[str, object] = {
 
 
 def require_auth() -> None:
-    """Block the page if the user has not authenticated.
-
-    When auth is disabled via PREFERO_AUTH_ENABLED, this is a no-op.
-    Otherwise it shows the auth gate and stops execution until the
-    user successfully authenticates.
-    """
+    """Run the auth gate. Currently a no-op (open access)."""
     if not auth_gate():
         st.stop()
 
@@ -56,7 +51,7 @@ def require_queue_slot() -> None:
 
 
 def _check_session_timeout() -> None:
-    """If the session was evicted due to inactivity, clear auth and redirect.
+    """If the session was evicted due to inactivity, clear state and redirect.
 
     Skips the check when estimation is actively running (the user is waiting
     for Slowbro to finish, not actually idle).
@@ -69,22 +64,22 @@ def _check_session_timeout() -> None:
     if st.session_state.get("_estimation_running"):
         return
 
-    if not st.session_state.get("authenticated"):
-        return  # not logged in → nothing to expire
+    if not st.session_state.get("username"):
+        return  # no username set → nothing to expire
 
     # Only check if user was previously admitted to the queue.
-    # Without this, freshly authenticated users who haven't entered
-    # the queue yet would be incorrectly treated as evicted.
+    # Without this, fresh users who haven't entered the queue yet
+    # would be incorrectly treated as evicted.
     if not st.session_state.get("_queue_admitted"):
         return
 
     if not is_session_active():
-        # Session was evicted — clear auth state
-        for key in ("authenticated", "auth_email", "username", "user_id"):
+        # Session was evicted — clear state so user re-enters
+        for key in ("username", "user_id"):
             st.session_state[key] = _SESSION_DEFAULTS.get(key, "")
         st.session_state.pop("_queue_session_id", None)
         st.session_state.pop("_queue_admitted", None)
-        st.warning("Your session expired due to inactivity. Please sign in again.")
+        st.warning("Your session expired due to inactivity. Please choose a username to continue.")
         st.stop()
 
 

@@ -427,11 +427,7 @@ with c3:
 
 st.header("Space Configuration")
 
-auth_enabled = os.environ.get("PREFERO_AUTH_ENABLED", "false")
 queue_enabled = os.environ.get("PREFERO_QUEUE_ENABLED", "false")
-
-invite_codes_raw = os.environ.get("PREFERO_INVITATION_CODES", "")
-invite_count = len([c for c in invite_codes_raw.split(",") if c.strip()]) if invite_codes_raw.strip() else 0
 
 admin_users_display = os.environ.get("PREFERO_ADMIN_USERS", "(not set)")
 
@@ -440,10 +436,9 @@ smtp_configured = bool(os.environ.get("SMTP_USER")) and bool(os.environ.get("SMT
 cfg_col1, cfg_col2 = st.columns(2)
 
 with cfg_col1:
-    st.metric("Auth enabled", auth_enabled)
+    st.metric("Access mode", "Open (no login)")
     st.metric("Queue enabled", queue_enabled)
     st.metric("SMTP configured", "Yes" if smtp_configured else "No")
 
 with cfg_col2:
-    st.metric("Invitation codes", str(invite_count))
     st.metric("Admin users", admin_users_display)

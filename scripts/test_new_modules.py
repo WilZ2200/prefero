@@ -2,7 +2,7 @@
 """Comprehensive tests for newly created/modified modules in 分析侠 Prefero.
 
 Tested modules:
-  1. app/auth.py          — Authentication (OTP, invitation codes, rate limiting)
+  1. app/auth.py          — Authentication (open access, username gate)
   2. app/session_queue.py — Concurrent user queue
   3. app/waiting_facts.py — Cultural facts list
   4. app/pages/1_Data.py  — _generate_template_excel()
@@ -57,242 +57,33 @@ def _reset_session_state():
 # ══════════════════════════════════════════════════════════════════
 
 class TestAuth(unittest.TestCase):
-    """Tests for the authentication module."""
+    """Tests for the authentication module (open access)."""
 
     def setUp(self):
         _reset_session_state()
-        # Clean env vars that auth.py reads
-        for var in ("PREFERO_AUTH_ENABLED", "PREFERO_INVITATION_CODES",
-                     "SMTP_USER", "SMTP_PASS", "SMTP_HOST", "SMTP_PORT"):
-            os.environ.pop(var, None)
-
-    def tearDown(self):
-        for var in ("PREFERO_AUTH_ENABLED", "PREFERO_INVITATION_CODES",
-                     "SMTP_USER", "SMTP_PASS", "SMTP_HOST", "SMTP_PORT"):
-            os.environ.pop(var, None)
-
-    # ── _generate_otp ─────────────────────────────────────────────
-
-    def test_generate_otp_returns_6_digit_string(self):
-        from auth import _generate_otp
-        otp = _generate_otp()
-        self.assertIsInstance(otp, str)
-        self.assertEqual(len(otp), 6)
-        self.assertTrue(otp.isdigit(), f"OTP '{otp}' is not all digits")
-
-    def test_generate_otp_multiple_calls_vary(self):
-        """Multiple calls should (very likely) produce different OTPs."""
-        from auth import _generate_otp
-        otps = {_generate_otp() for _ in range(50)}
-        # With 10^6 possibilities and 50 draws, collisions are extremely rare
-        self.assertGreater(len(otps), 1, "50 OTP calls all returned the same value")
-
-    # ── _get_invitation_codes ─────────────────────────────────────
-
-    def test_invitation_codes_empty_when_unset(self):
-        from auth import _get_invitation_codes
-        self.assertEqual(_get_invitation_codes(), [])
-
-    def test_invitation_codes_empty_string(self):
-        from auth import _get_invitation_codes
-        os.environ["PREFERO_INVITATION_CODES"] = ""
-        self.assertEqual(_get_invitation_codes(), [])
-
-    def test_invitation_codes_whitespace_only(self):
-        from auth import _get_invitation_codes
-        os.environ["PREFERO_INVITATION_CODES"] = "   "
-        self.assertEqual(_get_invitation_codes(), [])
-
-    def test_invitation_codes_single(self):
-        from auth import _get_invitation_codes
-        os.environ["PREFERO_INVITATION_CODES"] = "abc123"
-        self.assertEqual(_get_invitation_codes(), ["ABC123"])
-
-    def test_invitation_codes_multiple_with_spaces(self):
-        from auth import _get_invitation_codes
-        os.environ["PREFERO_INVITATION_CODES"] = " code1 , code2 , CODE3 "
-        self.assertEqual(_get_invitation_codes(), ["CODE1", "CODE2", "CODE3"])
-
-    def test_invitation_codes_case_insensitive_upper(self):
-        """Codes are stored upper-cased for case-insensitive matching."""
-        from auth import _get_invitation_codes
-        os.environ["PREFERO_INVITATION_CODES"] = "HelloWorld"
-        codes = _get_invitation_codes()
-        self.assertIn("HELLOWORLD", codes)
-
-    def test_invitation_codes_skip_empty_segments(self):
-        from auth import _get_invitation_codes
-        os.environ["PREFERO_INVITATION_CODES"] = "a,,b, ,c"
-        codes = _get_invitation_codes()
-        self.assertEqual(codes, ["A", "B", "C"])
-
-    # ── _auth_enabled ─────────────────────────────────────────────
-
-    def test_auth_enabled_false_when_unset(self):
-        from auth import _auth_enabled
-        self.assertFalse(_auth_enabled())
-
-    def test_auth_enabled_false_when_empty(self):
-        from auth import _auth_enabled
-        os.environ["PREFERO_AUTH_ENABLED"] = ""
-        self.assertFalse(_auth_enabled())
-
-    def test_auth_enabled_false_when_random_string(self):
-        from auth import _auth_enabled
-        os.environ["PREFERO_AUTH_ENABLED"] = "yes"
-        self.assertFalse(_auth_enabled())
-
-    def test_auth_enabled_true(self):
-        from auth import _auth_enabled
-        os.environ["PREFERO_AUTH_ENABLED"] = "true"
-        self.assertTrue(_auth_enabled())
-
-    def test_auth_enabled_true_case_insensitive(self):
-        from auth import _auth_enabled
-        os.environ["PREFERO_AUTH_ENABLED"] = "TRUE"
-        self.assertTrue(_auth_enabled())
-
-    def test_auth_enabled_true_mixed_case(self):
-        from auth import _auth_enabled
-        os.environ["PREFERO_AUTH_ENABLED"] = "True"
-        self.assertTrue(_auth_enabled())
-
-    # ── _smtp_configured ──────────────────────────────────────────
-
-    def test_smtp_not_configured_when_unset(self):
-        from auth import _smtp_configured
-        self.assertFalse(_smtp_configured())
-
-    def test_smtp_not_configured_with_only_user(self):
-        from auth import _smtp_configured
-        os.environ["SMTP_USER"] = "user@example.com"
-        self.assertFalse(_smtp_configured())
-
-    def test_smtp_not_configured_with_only_pass(self):
-        from auth import _smtp_configured
-        os.environ["SMTP_PASS"] = "secret"
-        self.assertFalse(_smtp_configured())
-
-    def test_smtp_configured_with_both(self):
-        from auth import _smtp_configured
-        os.environ["SMTP_USER"] = "user@example.com"
-        os.environ["SMTP_PASS"] = "secret"
-        self.assertTrue(_smtp_configured())
-
-    def test_smtp_not_configured_with_empty_user(self):
-        from auth import _smtp_configured
-        os.environ["SMTP_USER"] = ""
-        os.environ["SMTP_PASS"] = "secret"
-        self.assertFalse(_smtp_configured())
-
-    # ── _check_rate_limit & _record_otp_attempt ───────────────────
-
-    def test_rate_limit_allows_first_attempt(self):
-        from auth import _check_rate_limit
-        self.assertTrue(_check_rate_limit("test@example.com"))
-
-    def test_rate_limit_allows_up_to_three(self):
-        from auth import _check_rate_limit, _record_otp_attempt
-        email = "ratelimit@example.com"
-        _record_otp_attempt(email)
-        self.assertTrue(_check_rate_limit(email))
-        _record_otp_attempt(email)
-        self.assertTrue(_check_rate_limit(email))
-        _record_otp_attempt(email)
-        # Now at 3 attempts — should be blocked
-        self.assertFalse(_check_rate_limit(email))
-
-    def test_rate_limit_different_emails_independent(self):
-        from auth import _check_rate_limit, _record_otp_attempt
-        for _ in range(3):
-            _record_otp_attempt("a@example.com")
-        self.assertFalse(_check_rate_limit("a@example.com"))
-        # Different email should still be allowed
-        self.assertTrue(_check_rate_limit("b@example.com"))
-
-    def test_rate_limit_old_attempts_expire(self):
-        """Attempts older than 10 minutes should not count."""
-        from auth import _check_rate_limit, _record_otp_attempt
-        email = "expire@example.com"
-        # Manually set old timestamps
-        old_time = time.time() - 11 * 60  # 11 minutes ago
-        _mock_session_state["_otp_attempts"] = {email: [old_time, old_time, old_time]}
-        self.assertTrue(_check_rate_limit(email))
-
-    def test_record_otp_creates_key_if_missing(self):
-        from auth import _record_otp_attempt
-        self.assertNotIn("_otp_attempts", _mock_session_state)
-        _record_otp_attempt("new@example.com")
-        self.assertIn("_otp_attempts", _mock_session_state)
-        self.assertEqual(len(_mock_session_state["_otp_attempts"]["new@example.com"]), 1)
-
-    # ── _send_otp_email (mocked) ──────────────────────────────────
-
-    def test_send_otp_email_constructs_message(self):
-        from auth import _send_otp_email
-        import base64
-        os.environ["SMTP_USER"] = "sender@example.com"
-        os.environ["SMTP_PASS"] = "pass123"
-        os.environ["SMTP_HOST"] = "smtp.example.com"
-        os.environ["SMTP_PORT"] = "587"
-
-        with patch("auth.smtplib.SMTP") as mock_smtp_class:
-            mock_server = MagicMock()
-            mock_smtp_class.return_value.__enter__ = MagicMock(return_value=mock_server)
-            mock_smtp_class.return_value.__exit__ = MagicMock(return_value=False)
-
-            _send_otp_email("recipient@example.com", "123456")
-
-            # Verify SMTP was initialized with correct host/port
-            mock_smtp_class.assert_called_once_with("smtp.example.com", 587, timeout=15)
-            # Verify the sendmail call happened
-            mock_server.starttls.assert_called_once()
-            mock_server.login.assert_called_once_with("sender@example.com", "pass123")
-            mock_server.sendmail.assert_called_once()
-            call_args = mock_server.sendmail.call_args
-            self.assertEqual(call_args[0][0], "sender@example.com")
-            self.assertEqual(call_args[0][1], ["recipient@example.com"])
-            # Verify the MIME headers
-            msg_string = call_args[0][2]
-            self.assertIn("Subject: Your Prefero Login Code", msg_string)
-            self.assertIn("From: sender@example.com", msg_string)
-            self.assertIn("To: recipient@example.com", msg_string)
-            # The body is base64-encoded (MIMEText with utf-8 charset)
-            # Decode and verify the OTP code is in the body
-            from email import message_from_string
-            parsed = message_from_string(msg_string)
-            body = parsed.get_payload(decode=True).decode("utf-8")
-            self.assertIn("123456", body)
-            self.assertIn("Prefero", body)
-            self.assertIn("verification code", body)
-
-    def test_send_otp_email_default_host_and_port(self):
-        from auth import _send_otp_email
-        os.environ["SMTP_USER"] = "u@example.com"
-        os.environ["SMTP_PASS"] = "p"
-        # Don't set SMTP_HOST or SMTP_PORT — should use defaults
-
-        with patch("auth.smtplib.SMTP") as mock_smtp_class:
-            mock_server = MagicMock()
-            mock_smtp_class.return_value.__enter__ = MagicMock(return_value=mock_server)
-            mock_smtp_class.return_value.__exit__ = MagicMock(return_value=False)
-
-            _send_otp_email("r@example.com", "999999")
-
-            mock_smtp_class.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
 
     # ── auth_gate ─────────────────────────────────────────────────
 
-    def test_auth_gate_returns_true_when_disabled(self):
+    def test_auth_gate_always_returns_true(self):
         from auth import auth_gate
-        # PREFERO_AUTH_ENABLED not set → disabled
         self.assertTrue(auth_gate())
 
-    def test_auth_gate_returns_true_when_already_authenticated(self):
+    def test_auth_gate_sets_authenticated_flag(self):
         from auth import auth_gate
-        os.environ["PREFERO_AUTH_ENABLED"] = "true"
-        _mock_session_state["authenticated"] = True
-        self.assertTrue(auth_gate())
+        auth_gate()
+        self.assertTrue(_mock_session_state.get("authenticated"))
+
+    # ── username_gate ─────────────────────────────────────────────
+
+    def test_username_gate_returns_true_when_username_set(self):
+        from auth import username_gate
+        _mock_session_state["username"] = "TestUser"
+        self.assertTrue(username_gate())
+
+    def test_username_gate_returns_false_when_no_username(self):
+        from auth import username_gate
+        result = username_gate()
+        self.assertFalse(result)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -913,7 +704,6 @@ class TestUtils(unittest.TestCase):
 
     def setUp(self):
         _reset_session_state()
-        os.environ.pop("PREFERO_AUTH_ENABLED", None)
         os.environ.pop("PREFERO_QUEUE_ENABLED", None)
 
     # ── Imports ───────────────────────────────────────────────────
@@ -997,6 +787,9 @@ class TestUtils(unittest.TestCase):
         for key, default_val in _SESSION_DEFAULTS.items():
             self.assertIn(key, _mock_session_state,
                           f"Key '{key}' not found in session state after init")
+            # auth_gate() sets authenticated=True during init, so skip that check
+            if key == "authenticated":
+                continue
             self.assertEqual(_mock_session_state[key], default_val)
 
     def test_init_session_state_does_not_overwrite_existing(self):
