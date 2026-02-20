@@ -1,4 +1,4 @@
-"""Authentication module for 分析侠 Prefero.
+"""Authentication module for Prefero.
 
 Open access — no login required. Users pick a display name for community features.
 Admin access is controlled separately via PREFERO_ADMIN_PASSWORD env var.
@@ -29,7 +29,7 @@ def username_gate() -> bool:
 
     try:
         st.set_page_config(
-            page_title="分析侠 Prefero - Welcome",
+            page_title="Prefero - Welcome",
             page_icon="🧮",
             layout="centered",
         )
@@ -46,7 +46,7 @@ def username_gate() -> bool:
         unsafe_allow_html=True,
     )
     st.markdown(
-        "<h3 style='text-align:center;'>Welcome to 分析侠 Prefero</h3>"
+        "<h3 style='text-align:center;'>Welcome to Prefero</h3>"
         "<p style='text-align:center; color:gray;'>"
         "Choose a display name to get started</p>",
         unsafe_allow_html=True,

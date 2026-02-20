@@ -1,4 +1,4 @@
-# 分析侠 — GPU-Enabled DCE Analysis Tool
+# Prefero — GPU-Enabled DCE Analysis Tool
 
 ## Project Overview
 

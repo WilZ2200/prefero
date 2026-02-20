@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comprehensive tests for newly created/modified modules in 分析侠 Prefero.
+"""Comprehensive tests for newly created/modified modules in Prefero.
 
 Tested modules:
   1. app/auth.py          — Authentication (open access, username gate)
@@ -820,7 +820,7 @@ class TestUtils(unittest.TestCase):
 if __name__ == "__main__":
     # Run with verbose output
     print("=" * 70)
-    print("  Comprehensive tests for new/modified modules in 分析侠 Prefero")
+    print("  Comprehensive tests for new/modified modules in Prefero")
     print("=" * 70)
     print()
 

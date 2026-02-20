@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-st.set_page_config(page_title="分析侠 - Redirect", layout="wide")
+st.set_page_config(page_title="Prefero - Redirect", layout="wide")
 
 st.warning(
     "**This entry point is deprecated.**  \n"

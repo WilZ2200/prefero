@@ -1,4 +1,4 @@
-"""分析侠 — Page 4: Model Comparison."""
+"""Prefero — Page 4: Model Comparison."""
 
 from __future__ import annotations
 

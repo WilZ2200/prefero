@@ -1,4 +1,4 @@
-"""分析侠 — Page 6: Report Generation."""
+"""Prefero — Page 6: Report Generation."""
 from __future__ import annotations
 
 import sys

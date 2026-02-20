@@ -1,4 +1,4 @@
-"""分析侠 — Page 5: Bootstrap Inference."""
+"""Prefero — Page 5: Bootstrap Inference."""
 
 from __future__ import annotations
 

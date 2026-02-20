@@ -1,5 +1,5 @@
 ---
-title: 分析侠 Prefero
+title: Prefero
 emoji: 🧮
 colorFrom: indigo
 colorTo: purple
@@ -8,7 +8,7 @@ app_port: 7860
 pinned: false
 ---
 
-# 分析侠 Prefero — DCE Analysis Tool
+# Prefero — DCE Analysis Tool
 
 End-to-end discrete choice experiment workflow:
 - reusable estimation engine (`conditional logit` and `mixed logit`)

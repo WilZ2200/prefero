@@ -1,4 +1,4 @@
-"""分析侠 — Page 8: Admin Dashboard."""
+"""Prefero — Page 8: Admin Dashboard."""
 
 from __future__ import annotations
 

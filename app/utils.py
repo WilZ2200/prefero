@@ -1,4 +1,4 @@
-"""Shared utilities for the 分析侠 multi-page Streamlit app."""
+"""Shared utilities for the Prefero multi-page Streamlit app."""
 
 from __future__ import annotations
 
@@ -228,7 +228,7 @@ def slowbro_status() -> None:
 def sidebar_branding() -> None:
     """Render common sidebar branding and data-status indicator."""
     slowbro_status()
-    st.sidebar.markdown("## 分析侠")
+    st.sidebar.markdown("## Prefero")
     st.sidebar.caption("Discrete Choice Experiment Analysis")
 
     username = st.session_state.get("username", "")
@@ -293,7 +293,6 @@ def require_data() -> None:
 # ── Multilingual scrolling banner ─────────────────────────────────
 
 _TRANSLATIONS = [
-    ("分析侠", "zh"),
     ("Prefero", "en"),
     ("プレフェロ", "ja"),
     ("프레페로", "ko"),

@@ -1,4 +1,4 @@
-"""分析侠 — Page 2: Model Configuration and Estimation."""
+"""Prefero — Page 2: Model Configuration and Estimation."""
 
 from __future__ import annotations
 

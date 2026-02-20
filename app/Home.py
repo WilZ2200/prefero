@@ -1,4 +1,4 @@
-"""分析侠 Prefero — Home page (main entry point for the multi-page app)."""
+"""Prefero — Home page (main entry point for the multi-page app)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import streamlit as st
 from utils import init_session_state, language_banner, sidebar_branding, slowbro_next_step
 
 st.set_page_config(
-    page_title="分析侠 Prefero - DCE Analysis Tool",
+    page_title="Prefero - DCE Analysis Tool",
     page_icon="🧮",
     layout="wide",
 )
@@ -39,11 +39,11 @@ st.markdown(
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ── Welcome ────────────────────────────────────────────────────────
-st.title("分析侠  Prefero")
+st.title("Prefero")
 st.caption("Discrete Choice Experiment Analysis")
 st.markdown(
     """
-    Welcome to **分析侠 Prefero**, a **completely code-free** interactive tool
+    Welcome to **Prefero**, a **completely code-free** interactive tool
     for specifying, estimating, and comparing discrete-choice models.
 
     No programming required — just upload your data, point and click, and let
