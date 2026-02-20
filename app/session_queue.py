@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
+# Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
+
 """Concurrent user queue for Prefero on shared hosting (e.g. HF Spaces).
 
 Uses a module-level dict (shared across all Streamlit sessions within the

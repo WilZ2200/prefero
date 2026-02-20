@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
+# Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
+
 """SQLite-backed community database for the discussion forum.
 
 Stores users (username, email, join date) and posts (author, title, body,

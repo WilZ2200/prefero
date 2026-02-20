@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
+# Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
+
 """Authentication module for Prefero.
 
 Open access — no login required. Users pick a display name for community features.

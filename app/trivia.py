@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
+# Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
+
 """Trivia facts displayed during model estimation."""
 
 TRIVIA_FACTS: list[str] = [

@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
+# Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
+
 """Prefero — Page 7: Community Discussion Forum."""
 
 from __future__ import annotations

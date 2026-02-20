@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
+# Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
+
 """Shared utilities for the Prefero multi-page Streamlit app."""
 
 from __future__ import annotations
@@ -267,6 +270,14 @@ def sidebar_branding() -> None:
                     except Exception:
                         pass
                     st.rerun()
+
+    # ── License notice ──
+    st.sidebar.markdown(
+        "<p style='font-size:0.7rem; color:#888; margin-top:16px;'>"
+        "&copy; 2026 Hengzhe Zhao<br>"
+        "AGPL-3.0 &amp; Commercial License</p>",
+        unsafe_allow_html=True,
+    )
 
     # Developer mode prompt (admin users only)
     if _is_admin_user() and not st.session_state.get("_dev_mode_active"):

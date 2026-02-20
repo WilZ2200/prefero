@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
+# Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
+
 """Per-user model persistence via HF Dataset.
 
 Each user's saved models are stored as ``models/{username}.json`` in the

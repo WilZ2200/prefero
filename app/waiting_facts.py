@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
+# Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
+
 """Cultural facts about queuing and waiting, displayed in the waiting room."""
 
 WAITING_FACTS: list[str] = [
