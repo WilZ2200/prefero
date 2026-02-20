@@ -271,14 +271,6 @@ def sidebar_branding() -> None:
                         pass
                     st.rerun()
 
-    # ── License notice ──
-    st.sidebar.markdown(
-        "<p style='font-size:0.7rem; color:#888; margin-top:16px;'>"
-        "&copy; 2026 Hengzhe Zhao<br>"
-        "AGPL-3.0 &amp; Commercial License</p>",
-        unsafe_allow_html=True,
-    )
-
     # Developer mode prompt (admin users only)
     if _is_admin_user() and not st.session_state.get("_dev_mode_active"):
         import os
@@ -293,6 +285,16 @@ def sidebar_branding() -> None:
                         st.rerun()
                     else:
                         st.error("Incorrect key.")
+
+    # ── License notice (always at sidebar bottom) ──
+    st.sidebar.divider()
+    st.sidebar.markdown(
+        "<p style='font-size:0.7rem; color:#888; text-align:center;'>"
+        "&copy; 2026 Hengzhe Zhao<br>"
+        "Dual-licensed: <a href='https://github.com/WilZ2200/prefero/blob/main/LICENSE' "
+        "target='_blank' style='color:#888;'>AGPL-3.0</a> &amp; Commercial</p>",
+        unsafe_allow_html=True,
+    )
 
 
 def require_data() -> None:
