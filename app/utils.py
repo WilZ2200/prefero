@@ -131,8 +131,9 @@ def init_session_state() -> None:
             st.session_state[key] = default
     _check_session_timeout()
     require_auth()
-    if not username_gate():
-        st.stop()
+    # username_gate removed — visitors see the home page directly
+    # if not username_gate():
+    #     st.stop()
     require_queue_slot()
     queue_heartbeat()
     if not st.session_state.get("_saved_models_loaded"):
