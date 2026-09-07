@@ -84,15 +84,52 @@ Outputs:
 streamlit run app/Home.py
 ```
 
-The app is a multi-page Streamlit application with five pages:
+The app retains its Streamlit multipage workflow:
 
-| Page | Description |
-|------|-------------|
-| **1. Data** | Load simulated data, Apollo datasets, or upload your own CSV (long or wide format with automatic conversion). Preview data, panel structure, and descriptive statistics. |
-| **2. Model** | Configure column roles, select utility variables, set distribution assumptions (fixed/normal/lognormal), choose Conditional, Mixed, or Latent Class Logit, and run estimation. |
-| **3. Results** | Inspect model fit metrics, parameter estimates with standard errors and significance, interactive coefficient plots with CIs, WTP analysis, and predicted vs actual choice shares. Export estimates, summaries, and HTML reports. |
-| **4. Compare** | Compare multiple estimated models side-by-side with fit metrics, parameter tables, coefficient plots, and likelihood ratio tests. |
-| **5. Bootstrap** | Non-parametric bootstrap inference by resampling individuals. Compare bootstrap SEs with asymptotic SEs. |
+| Page | Capability |
+|---|---|
+| Data | Upload CSV/Excel, convert wide data, simulate DCE/BWS data, or load Apollo examples. |
+| Model | Conditional Logit, Mixed Logit, GMNL and Latent Class; dummy coding, interactions, normal/lognormal coefficients, full/selective correlation and BWS. |
+| Results | Model fit, convergence, estimates, covariance/correlation, WTP and predictions. |
+| Compare | Model comparisons, statistical tests and respondent-level cross-validation. |
+| Bootstrap | Respondent-level resampling with explicit successful replication counts. |
+| Report | Download analysis reports and estimation outputs. |
+| Community / Admin | Existing user and discussion workflows. |
+
+### Estimation implementation (0.2)
+
+CL, MXL and GMNL share a tensor-native PyTorch L-BFGS optimizer with strong-Wolfe
+line search. The optimizer evaluates mean negative log-likelihood per choice task
+and uses a maximum absolute per-task gradient tolerance of `1e-4` in FP32. Small
+steps without meeting this gradient tolerance are reported as non-convergence.
+The likelihood, parameter ordering, starting-vector format, results, saved-model
+format, correlation structures and BWS definitions remain compatible. Latent
+Class retains its dedicated EM/direct estimators. Covariance inference is omitted
+when the Hessian is not positive definite; no diagonal shift is used to manufacture
+standard errors. Bootstrap counts only converged, finite replications.
+
+The public HF Space runs on CPU. Local runs can use supported CUDA or Apple MPS
+hardware. The interactive app uses Halton draws.
+
+### Verification and deployment
+
+```bash
+python scripts/test_e2e.py
+python scripts/test_cv.py
+python scripts/test_new_modules.py
+python -m pytest tests -q
+```
+
+GitHub Actions runs these checks, builds the Docker image and verifies its health
+endpoint before deploying `main`. HF updates must be fast-forwards; remote-only
+changes stop deployment. Each deployment saves the prior HF commit under a
+`releases/pre-<run-id>` branch. Roll back with an ordinary revert of the release
+commit and the same verified deployment flow.
+
+Runtime SQLite files and generated outputs are excluded from the application
+image. Existing hosted account and forum persistence uses the configured HF
+dataset. For isolated local tests, set `PREFERO_DB_PATH` to a temporary database
+and do not supply HF credentials.
 
 ## 6) Data Format
 

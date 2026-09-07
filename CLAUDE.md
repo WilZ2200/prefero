@@ -7,7 +7,7 @@ A GPU-accelerated discrete choice experiment (DCE) analysis toolkit for mixed lo
 ## Tech Stack
 
 - **Language:** Python 3.10+
-- **Core:** PyTorch (GPU/autodiff), scipy (L-BFGS-B optimizer), numpy, pandas
+- **Core:** PyTorch (GPU/autodiff), PyTorch (L-BFGS optimizer for CL/MXL/GMNL); scipy for Latent Class, numpy, pandas
 - **UI:** Streamlit
 - **Package:** setuptools with `src/` layout
 
@@ -41,7 +41,7 @@ outputs/                # Estimation results (CSV + JSON)
 - Data must always be in long format before estimation
 - Use `ChoiceTensors` as the standard internal data representation
 - PyTorch tensors for all numerical computation (enables GPU + autodiff)
-- scipy L-BFGS-B for optimization (wraps PyTorch gradient computation)
+- Shared tensor-native L-BFGS for CL/MXL/GMNL; preserve dedicated Latent Class optimization
 - Follow existing patterns in model.py for new estimator variants
 - Scripts in `scripts/` are thin CLI wrappers around library functions
 

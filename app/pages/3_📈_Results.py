@@ -71,6 +71,8 @@ def _significance(p: float) -> str:
 
 est_df = estimation.estimates.drop(columns=["theta_index"], errors="ignore").copy()
 has_se = "std_error" in est_df.columns and est_df["std_error"].notna().any()
+if not has_se:
+    st.info("Asymptotic standard errors are unavailable at this estimate. Check convergence and model identification before interpreting uncertainty.")
 if has_se:
     est_df["sig"] = est_df["p_value"].apply(_significance)
 

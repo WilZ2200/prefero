@@ -1,20 +1,83 @@
-name: Sync to Hugging Face Spaces
+name: Verify and deploy Prefero
 
 on:
   push:
-    branches: [main]
+    branches: [main, release/empirical-prototype]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prefero-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  sync:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install tested dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Backend and compatibility tests
+        env:
+          OMP_NUM_THREADS: '2'
+          PYTHONPATH: src
+          PREFERO_DB_PATH: /tmp/prefero-ci.db
+        run: |
+          python scripts/test_e2e.py
+          python scripts/test_cv.py
+          python scripts/test_new_modules.py
+          python -m pytest tests -q
+      - name: Build Docker image
+        run: docker build -t prefero:${{ github.sha }} .
+      - name: Check container health
+        run: |
+          docker run -d --name prefero-check -p 7860:7860 prefero:${{ github.sha }}
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:7860/_stcore/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs prefero-check
+          exit 1
+      - name: Stop test container
+        if: always()
+        run: docker rm -f prefero-check || true
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
-
-      - name: Push to Hugging Face
+      - name: Preserve current HF revision and deploy a fast-forward update
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        shell: bash
         run: |
-          git push https://Wil2200:$HF_TOKEN@huggingface.co/spaces/Wil2200/prefero main --force
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          cat > "$RUNNER_TEMP/hf-askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'Wil2200' ;;
+            *Password*) printf '%s\n' "$HF_TOKEN" ;;
+          esac
+          ASKPASS
+          chmod 700 "$RUNNER_TEMP/hf-askpass"
+          export GIT_ASKPASS="$RUNNER_TEMP/hf-askpass"
+          export GIT_TERMINAL_PROMPT=0
+          git remote add hf https://huggingface.co/spaces/Wil2200/prefero
+          git fetch hf main
+          previous=$(git rev-parse FETCH_HEAD)
+          git merge-base --is-ancestor "$previous" "$GITHUB_SHA"
+          git push hf "$previous:refs/heads/releases/pre-$GITHUB_RUN_ID"
+          git push hf "$GITHUB_SHA:refs/heads/main"
+          printf 'Deployed %s; previous HF revision %s\n' "$GITHUB_SHA" "$previous" >> "$GITHUB_STEP_SUMMARY"

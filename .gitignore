@@ -28,3 +28,7 @@ thesis/*.lot
 thesis/*.bbl
 thesis/*.blg
 thesis/*.pdf
+
+# Runtime user databases are not source assets
+app/*.db
+app/*.db-*
