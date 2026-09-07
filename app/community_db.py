@@ -431,7 +431,7 @@ def _sync_posts_from_hf() -> None:
 
 _HF_DATA = Path("/data")  # HF Spaces persistent storage
 _LOCAL_FALLBACK = Path(__file__).resolve().parent / "community.db"
-DB_PATH = str(_HF_DATA / "community.db") if _HF_DATA.is_dir() else str(_LOCAL_FALLBACK)
+DB_PATH = os.environ.get("PREFERO_DB_PATH") or (str(_HF_DATA / "community.db") if _HF_DATA.is_dir() else str(_LOCAL_FALLBACK))
 
 _local = threading.local()
 

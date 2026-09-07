@@ -152,8 +152,9 @@ def run_bootstrap(
                 seed=rep_seed, **extra_kwargs,
             )
             est_values = result.estimation.estimates["estimate"].to_numpy()
-            all_estimates.append(est_values)
-            n_successful += 1
+            if result.estimation.success and np.isfinite(est_values).all():
+                all_estimates.append(est_values)
+                n_successful += 1
         except Exception:
             pass  # skip failed replications
 

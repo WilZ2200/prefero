@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import time
 import warnings
 from dataclasses import dataclass, field
 from typing import Any
@@ -12,12 +11,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from scipy.optimize import minimize
 from scipy.stats import norm, qmc
 
 from .bws import BwsData, bws_log_prob, standard_log_prob
 from .config import VariableSpec
 from .data import ChoiceTensors
+from .optimization import fit_lbfgs
 
 logger = logging.getLogger(__name__)
 
@@ -341,18 +340,6 @@ class MixedLogitEstimator:
             return torch.nn.functional.softplus(theta[self._lambda_w_idx]) + 1e-6
         return 1.0
 
-    def _objective_and_grad(self, theta_np: np.ndarray) -> tuple[float, np.ndarray]:
-        theta = torch.tensor(
-            theta_np,
-            dtype=torch.float32,
-            device=self.device,
-            requires_grad=True,
-        )
-        loss = self._neg_log_likelihood_tensor(theta)
-        loss.backward()
-        grad = theta.grad.detach().cpu().numpy().astype(np.float64)
-        return float(loss.detach().cpu().item()), grad
-
     def _compute_vcov(self, theta_hat: np.ndarray) -> np.ndarray | None:
         """Compute variance-covariance matrix via the Hessian of the neg-log-likelihood."""
         try:
@@ -366,14 +353,14 @@ class MixedLogitEstimator:
             H = torch.autograd.functional.hessian(nll_fn, theta_t)
             H_np = H.detach().cpu().numpy().astype(np.float64)
 
-            # Regularise if needed to ensure positive-definiteness
+            H_np = (H_np + H_np.T) / 2
             eigvals = np.linalg.eigvalsh(H_np)
-            if eigvals.min() <= 0:
-                shift = abs(eigvals.min()) + 1e-4
-                H_np += np.eye(len(H_np)) * shift
+            if not np.isfinite(H_np).all() or eigvals.min() <= 0:
                 warnings.warn(
-                    f"Hessian was not positive definite; applied diagonal shift of {shift:.6f}."
+                    "Hessian is not positive definite; asymptotic standard errors "
+                    "are unavailable at this estimate."
                 )
+                return None
 
             vcov = np.linalg.inv(H_np)
             return vcov
@@ -594,27 +581,11 @@ class MixedLogitEstimator:
                 )
         else:
             theta0 = self._initial_theta()
-        cache: dict[str, np.ndarray | float] = {}
-
-        def evaluate(theta: np.ndarray) -> tuple[float, np.ndarray]:
-            x = np.asarray(theta, dtype=np.float64)
-            cached_x = cache.get("x")
-            if cached_x is None or not np.array_equal(cached_x, x):
-                value, grad = self._objective_and_grad(x)
-                cache["x"] = x.copy()
-                cache["value"] = value
-                cache["grad"] = grad
-            return float(cache["value"]), np.asarray(cache["grad"])
-
-        start = time.perf_counter()
-        opt = minimize(
-            fun=lambda x: evaluate(x)[0],
-            x0=theta0,
-            jac=lambda x: evaluate(x)[1],
-            method="L-BFGS-B",
-            options={"maxiter": maxiter, "disp": verbose},
+        opt = fit_lbfgs(
+            self._neg_log_likelihood_tensor, theta0, device=self.device,
+            maxiter=maxiter, loss_scale=self.n_obs,
         )
-        runtime = time.perf_counter() - start
+        runtime = opt.runtime_seconds
 
         theta_hat = np.asarray(opt.x)
         loglike = -float(opt.fun)

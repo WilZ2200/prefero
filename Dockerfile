@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -19,6 +19,7 @@ COPY app/ app/
 COPY data/ data/
 COPY .streamlit/ .streamlit/
 COPY pyproject.toml .
+COPY README.md .
 
 # Install the package
 RUN pip install --no-cache-dir -e .
