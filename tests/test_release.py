@@ -126,3 +126,25 @@ def test_model_results_and_report_pages(fixture, isolated_database):
         at.session_state['model_history'] = [entry]
         at.run()
         assert not at.exception, [(e.message) for e in at.exception]
+
+
+def test_hosted_queue_keeps_existing_analysis_session(isolated_database, monkeypatch):
+    """A heartbeat must not inject a full browser reload and lose user data."""
+    from streamlit.testing.v1 import AppTest
+    import streamlit.components.v1 as components
+    import session_queue
+    monkeypatch.setenv('PREFERO_QUEUE_ENABLED', 'true')
+    monkeypatch.setattr(session_queue, '_active_sessions', {})
+    monkeypatch.setattr(session_queue, '_session_usernames', {})
+    df = pd.DataFrame({'saved_analysis': [1, 2]})
+    at = AppTest.from_file(str(ROOT/'app/Home.py'), default_timeout=30)
+    at.session_state['df'] = df
+    with patch.object(components, 'html', wraps=components.html) as html:
+        at.run()
+        session_id = at.session_state['_queue_session_id']
+        at.run()
+    assert not at.exception
+    pd.testing.assert_frame_equal(at.session_state['df'], df)
+    assert at.session_state['_queue_session_id'] == session_id
+    assert list(session_queue._active_sessions) == [session_id]
+    assert all('location.reload' not in str(call) for call in html.call_args_list)

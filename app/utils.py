@@ -86,47 +86,6 @@ def _check_session_timeout() -> None:
         st.stop()
 
 
-def _inject_activity_heartbeat() -> None:
-    """Inject JavaScript that detects user activity and auto-refreshes to keep the session alive.
-
-    Monitors scroll, mouse movement, keyboard, and touch events on the parent
-    document.  If activity is detected within the last 90 seconds, triggers a
-    lightweight page reload every 90 seconds.  Streamlit session state persists
-    across reloads, so the heartbeat() call in init_session_state() naturally
-    refreshes the server-side timestamp.
-    """
-    import os
-    if os.environ.get("PREFERO_QUEUE_ENABLED", "").lower() != "true":
-        return  # no queue → no need for activity tracking
-
-    import streamlit.components.v1 as _components
-    _components.html(
-        """
-        <script>
-        (function() {
-            var INTERVAL = 90000;  // 90 seconds
-            var lastActivity = Date.now();
-            var events = ['scroll', 'mousemove', 'keydown', 'touchstart', 'click', 'wheel'];
-            var doc;
-            try { doc = window.parent.document; } catch(e) { return; }
-
-            events.forEach(function(e) {
-                doc.addEventListener(e, function() { lastActivity = Date.now(); }, {passive: true});
-            });
-
-            setInterval(function() {
-                if (Date.now() - lastActivity < INTERVAL) {
-                    // User was active — trigger Streamlit rerun to refresh heartbeat
-                    try { window.parent.location.reload(); } catch(e) {}
-                }
-            }, INTERVAL);
-        })();
-        </script>
-        """,
-        height=0,
-    )
-
-
 def init_session_state() -> None:
     """Ensure every shared session-state key exists with its default value."""
     for key, default in _SESSION_DEFAULTS.items():
@@ -149,7 +108,8 @@ def init_session_state() -> None:
                 st.session_state.saved_models = []
             st.session_state._saved_models_loaded = True
     st.session_state["_queue_admitted"] = True
-    _inject_activity_heartbeat()
+    # Page navigation and widget interactions refresh the existing session.
+    # A browser reload would discard the data and create a second queue slot.
     import inspect
     _caller = inspect.stack()[1].filename
     _page = Path(_caller).stem
