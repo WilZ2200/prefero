@@ -52,7 +52,11 @@ Look in `outputs/` for the estimates CSV and model summary JSON. To download the
 
 Prefero uses Halton draws in the app. Conditional logit, mixed logit and GMNL use PyTorch L-BFGS and a maximum per-task gradient tolerance of `1e-4` in FP32. Latent class uses separate EM and direct estimators. If the Hessian is not positive definite, Prefero leaves covariance estimates unavailable. Bootstrap summaries count only converged, finite fits.
 
-The hosted app runs on CPU. Local runs can use CUDA or Apple MPS with a compatible PyTorch installation.
+### Using your GPU
+
+When you run Prefero locally, it automatically uses a GPU if PyTorch can see one. That includes Apple Silicon via MPS, supported AMD GPUs via ROCm, and NVIDIA GPUs via CUDA. Otherwise, Prefero uses the CPU, as the hosted demo does.
+
+The **Model** page shows which device Prefero is using. On AMD, you may see the label **CUDA** because PyTorch uses the same interface for ROCm. If your GPU isn’t detected, check that you’ve installed the [PyTorch build for your hardware](https://pytorch.org/get-started/locally/).
 
 ## Questions or feedback?
 
