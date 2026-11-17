@@ -19,15 +19,8 @@ data/generated/*
 
 outputs/*
 
-thesis/*.aux
-thesis/*.log
-thesis/*.out
-thesis/*.toc
-thesis/*.lof
-thesis/*.lot
-thesis/*.bbl
-thesis/*.blg
-thesis/*.pdf
+thesis/
+Data analysis Plan.md
 
 # Runtime user databases are not source assets
 app/*.db
