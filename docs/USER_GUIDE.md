@@ -25,6 +25,20 @@ Use the Results page to review convergence, inference and predicted shares. Use 
 
 The hosted demo runs on CPU. For local GPU use, install the PyTorch wheel appropriate to your hardware using [PyTorch's installation guide](https://pytorch.org/get-started/locally/), then install the app with `python -m pip install -e .`. Prefero automatically uses CUDA (also the backend name on ROCm) or Apple MPS when available. Check the device on the Model page. The CLI accepts `--device cpu` for a CPU run.
 
+## Run the CPU example
+
+```bash
+python scripts/generate_simulated_data.py --seed 42 --utility-columns
+python scripts/run_estimation.py \
+  --data data/generated/simulated_choice_data.csv \
+  --id-col respondent_id --task-col task_id \
+  --alt-col alternative --choice-col choice \
+  --variables 'log1p_price:normal,time_10min:normal,comfort:normal,reliability:fixed,asc_alt_2:fixed,asc_alt_3:fixed' \
+  --model mixed --draws 200 --maxiter 150 --device cpu --out-prefix outputs/sim_mxl
+```
+
+The example uses the simulator's utility columns. Look for `Converged: True`, then inspect the estimates CSV and summary JSON under `outputs/`. A fit that fails to converge exits with status 1 and writes diagnostic output.
+
 ## Data handling
 
 The browser sends uploads to the server running Prefero. Prefero holds uploaded data and model results in the analysis session. Download your results before closing the session. The Community page links to public feedback channels. Use synthetic inputs in public issues.
