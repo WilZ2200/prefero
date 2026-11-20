@@ -5,8 +5,6 @@
 !README.md
 !requirements.txt
 !LICENSE
-!LICENSE-AGPL
-!LICENSE-COMMERCIAL
 !app/
 !app/**/
 !app/**/*.py
