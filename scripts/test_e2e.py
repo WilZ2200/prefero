@@ -546,7 +546,7 @@ _run("15. BWS + Conditional Logit", test_bws_clogit)
 
 
 # ===================================================================
-# 16. BWS + CLogit with lambda_w fixed (MaxDiff equivalent)
+# 16. Sequential BWS + CLogit with fixed worst-stage scale
 # ===================================================================
 def test_bws_clogit_fixed_lw():
     from dce_analyzer.config import ModelSpec, VariableSpec
@@ -577,7 +577,7 @@ def test_bws_clogit_fixed_lw():
     assert "lambda_w (worst scale)" not in param_names
 
 
-_run("16. BWS + CLogit fixed lambda_w (MaxDiff)", test_bws_clogit_fixed_lw)
+_run("16. Sequential BWS + CLogit with fixed lambda_w", test_bws_clogit_fixed_lw)
 
 
 # ===================================================================
@@ -643,11 +643,11 @@ def test_bws_gmnl():
         bws_worst_col="worst", estimate_lambda_w=True,
     )
     est = result.estimation
-    # 1 mu + 1 sd + 3 fixed + 1 lambda_w + 3 GMNL(tau,sigma_tau,gamma) = 9
-    assert est.n_parameters == 9, f"Expected 9 params, got {est.n_parameters}"
+    # 1 mu + 1 sd + 3 fixed + 1 lambda_w + 2 GMNL scale terms = 8
+    assert est.n_parameters == 8, f"Expected 8 params, got {est.n_parameters}"
     param_names = set(est.estimates["parameter"])
     assert "lambda_w (worst scale)" in param_names
-    assert "tau (scale mean)" in param_names
+    assert "sigma_tau (scale SD)" in param_names
 
 
 _run("18. BWS + GMNL", test_bws_gmnl)
@@ -846,10 +846,10 @@ def test_gmnl_full_correlation():
         f"Expected 2x2 cov, got {est.covariance_matrix.shape}"
     )
     assert est.correlation_matrix is not None
-    # GMNL params: 2 mu + chol(2)=3 + 2 fixed + 3 GMNL(tau,sigma_tau,gamma) = 10
-    assert est.n_parameters == 10, f"Expected 10 params, got {est.n_parameters}"
+    # 2 mu + 3 Cholesky + 2 fixed + 2 GMNL scale terms = 9
+    assert est.n_parameters == 9, f"Expected 9 params, got {est.n_parameters}"
     param_names = set(est.estimates["parameter"])
-    assert "tau (scale mean)" in param_names
+    assert "tau (scale mean)" not in param_names
     assert "sigma_tau (scale SD)" in param_names
     assert "gamma (mixing)" in param_names
 
@@ -891,7 +891,7 @@ def test_gmnl_selective_correlation():
     assert abs(cov[0, 2]) < 1e-8, f"Expected 0 cov(price,comfort), got {cov[0,2]}"
     assert abs(cov[1, 2]) < 1e-8, f"Expected 0 cov(time,comfort), got {cov[1,2]}"
     param_names = set(est.estimates["parameter"])
-    assert "tau (scale mean)" in param_names
+    assert "sigma_tau (scale SD)" in param_names
 
 
 _run("24. GMNL + selective correlation", test_gmnl_selective_correlation)

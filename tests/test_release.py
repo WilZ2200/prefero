@@ -85,9 +85,6 @@ def isolated_database(tmp_path, monkeypatch):
     monkeypatch.setattr(db, 'DB_PATH', str(tmp_path/'community.db'))
     if getattr(db._local, 'conn', None): db._local.conn.close()
     db._local.conn = None
-    for name in ['_sync_users_from_hf', '_sync_activity_from_hf', '_sync_posts_from_hf',
-                 '_save_users_to_hf', '_save_activity_to_hf', '_save_posts_to_hf']:
-        monkeypatch.setattr(db, name, lambda: None)
     db.init_db()
     yield db
     db._local.conn.close()
@@ -102,6 +99,30 @@ def test_community_uses_isolated_storage(isolated_database):
     db.create_reply(post.id, user.id, 'Local reply')
     assert db.post_count() == 1
     assert len(db.list_replies(post.id)) == 1
+
+
+def test_usage_logging_is_opt_in_and_drops_identifying_details(isolated_database, monkeypatch):
+    db = isolated_database
+    monkeypatch.delenv("PREFERO_TELEMETRY_ENABLED", raising=False)
+    db.log_activity("data_upload")
+    assert db.get_recent_activity() == []
+    monkeypatch.setenv("PREFERO_TELEMETRY_ENABLED", "true")
+    db.log_activity("data_upload")
+    [event] = db.get_recent_activity()
+    assert event["action"] == "data_upload"
+    assert (event["username"], event["details"]) == ("", "")
+
+
+def test_model_persistence_reports_write_failure(monkeypatch):
+    import model_store
+
+    monkeypatch.setattr(model_store, "_load_remote", lambda _: ([{}], None))
+    def fail_write(*args):
+        raise OSError("simulated storage failure")
+    monkeypatch.setattr(model_store, "_save_remote", fail_write)
+    monkeypatch.setattr(model_store, "serialize_model_entry", lambda entry: entry)
+    assert model_store.save_model("user", {}) is False
+    assert model_store.delete_saved_model("user", 0) is False
 
 
 @pytest.mark.parametrize('page', ['Home.py', *[str(p.relative_to(ROOT/'app')) for p in sorted((ROOT/'app/pages').glob('*.py'))]])

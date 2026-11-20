@@ -7,9 +7,13 @@ from __future__ import annotations
 
 import io
 import re
+import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pandas as pd
+
+from .data import chosen_row_mask
 
 
 @dataclass
@@ -32,36 +36,16 @@ class ColumnInference:
 def detect_format(df: pd.DataFrame) -> str:
     """Return ``'long'`` or ``'wide'`` based on column naming patterns.
 
-    Wide-format heuristic: look for columns that end with ``_1``, ``_2`` (or
-    just a trailing digit like ``tt1``, ``tt2``) and share a common prefix.
-    If sufficiently many such groups are found the data is likely wide.
+    Recognise a conventional alternative column first. Otherwise look for
+    groups of columns encoding the same attribute for several alternatives.
     """
-    groups = _find_suffix_groups(df.columns.tolist())
-    if len(groups) >= 2:
+    columns = df.columns.tolist()
+    known_long = {"alternative", "alt", "option", "alt_id"}
+    if known_long.intersection(str(col).lower() for col in columns):
+        return "long"
+    if _auto_attribute_groups(columns):
         return "wide"
     return "long"
-
-
-def _find_suffix_groups(columns: list[str]) -> dict[str, list[int]]:
-    """Identify column-name groups sharing a prefix with numeric suffixes.
-
-    Matches patterns like ``price_1, price_2`` and ``tt1, tt2``.
-    Returns ``{prefix: [suffixes]}`` for groups with at least two members.
-    """
-    # pattern: word characters followed by optional _ then one or more digits at end
-    pat = re.compile(r"^(.+?)_?(\d+)$")
-    buckets: dict[str, set[int]] = {}
-    for col in columns:
-        m = pat.match(col)
-        if m:
-            prefix, num = m.group(1), int(m.group(2))
-            buckets.setdefault(prefix, set()).add(num)
-
-    return {
-        prefix: sorted(nums)
-        for prefix, nums in buckets.items()
-        if len(nums) >= 2
-    }
 
 
 # ── Wide to long conversion ──────────────────────────────────────
@@ -73,6 +57,8 @@ def wide_to_long(
     id_col: str | None = None,
     choice_col: str | None = None,
     covariate_cols: list[str] | None = None,
+    *,
+    on_exclusion: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
     """Convert a wide-format DCE DataFrame to long format.
 
@@ -94,7 +80,11 @@ def wide_to_long(
         Columns that are constant across alternatives (demographics etc.).
         If ``None``, inferred as all columns not in attribute_groups, id_col,
         or choice_col.
+    on_exclusion : callable or None
+        Receives the exclusion summary. By default, a warning is emitted.
     """
+    if df.empty or not df.columns.is_unique:
+        raise ValueError("Wide input must contain data and have unique column names.")
     work = df.copy()
 
     # auto-detect attribute groups if not provided
@@ -114,6 +104,8 @@ def wide_to_long(
             "All groups must have the same number of alternatives."
         )
     n_alts = n_alts_set.pop()
+    if n_alts < 2:
+        raise ValueError("Wide input must describe at least two alternatives.")
 
     # auto-detect id column
     if id_col is None:
@@ -126,43 +118,61 @@ def wide_to_long(
     if choice_col is None:
         choice_col = _guess_choice_col(work.columns.tolist())
 
+    attribute_cols = [c for cols in attribute_groups.values() for c in cols]
+    mapped_cols = [id_col, *attribute_cols]
+    if choice_col is not None:
+        mapped_cols.append(choice_col)
+    missing = [c for c in [*mapped_cols, *(covariate_cols or [])] if c not in work.columns]
+    if missing:
+        raise ValueError(f"Missing mapped columns: {missing}")
+    if len(set(mapped_cols)) != len(mapped_cols):
+        raise ValueError("Respondent, choice and attribute roles must use distinct input columns.")
+    if work[id_col].isna().any():
+        raise ValueError(f"Missing values in respondent column '{id_col}'.")
+
+    reserved = {"respondent_id", "task_id", "alternative", "choice"}
+    if reserved.intersection(attribute_groups):
+        raise ValueError("Wide attribute names cannot replace structural output columns.")
+
     # ── Exclude respondents with ANY missing / invalid choice data ──
     # A missing choice means the respondent didn't answer that task.
     # We drop the entire respondent (not just the row) to keep clean panels.
-    import warnings
-
-    if choice_col and choice_col in work.columns:
+    if choice_col is not None:
         n_total_rows = len(work)
         n_total_resp = work[id_col].nunique()
 
-        # find rows where choice is NaN or not in the valid alt range [1..n_alts]
         valid_alts = set(range(1, n_alts + 1))
-        bad_mask = work[choice_col].isna()
-        if not bad_mask.any():
-            # also check for values outside the valid alt range
-            bad_mask = bad_mask | ~work[choice_col].isin(valid_alts)
+        work[choice_col] = pd.to_numeric(work[choice_col], errors="coerce")
+        bad_mask = ~work[choice_col].isin(valid_alts)
 
         if bad_mask.any():
             bad_respondents = work.loc[bad_mask, id_col].unique()
             na_rate = len(bad_respondents) / max(n_total_resp, 1)
             work = work[~work[id_col].isin(bad_respondents)].reset_index(drop=True)
-            warnings.warn(
+            message = (
                 f"Excluded {len(bad_respondents)} respondent(s) "
                 f"({na_rate:.1%} of {n_total_resp}) with missing or invalid "
                 f"choice data in column '{choice_col}'. "
+                f"Removed {n_total_rows - len(work)} of {n_total_rows} tasks. "
                 f"{work[id_col].nunique()} respondents remaining."
             )
+            if on_exclusion is None:
+                warnings.warn(message, stacklevel=2)
+            else:
+                on_exclusion(message)
+            if work.empty:
+                raise ValueError("No respondents remain after validating choices.")
 
-    # generate task_id per respondent
-    work["_task_id"] = work.groupby(id_col).cumcount() + 1
-
-    # figure out covariate columns
-    all_attr_cols = {c for cols in attribute_groups.values() for c in cols}
-    exclude = {id_col, "_task_id"} | all_attr_cols
-    if choice_col:
-        exclude.add(choice_col)
+    tasks = work.groupby(id_col, observed=True).cumcount() + 1
     if covariate_cols is None:
-        covariate_cols = [c for c in work.columns if c not in exclude]
+        covariate_cols = [c for c in work.columns if c not in mapped_cols]
+    if "task_id" in covariate_cols:
+        tasks = work["task_id"]
+        if tasks.isna().any() or work.duplicated(subset=[id_col, "task_id"]).any():
+            raise ValueError("Wide task IDs must be present and unique within each respondent.")
+        covariate_cols = [c for c in covariate_cols if c != "task_id"]
+    if (reserved | set(attribute_groups)).intersection(covariate_cols):
+        raise ValueError("Covariate names must not overwrite structural columns or attributes.")
 
     # build long parts
     parts = []
@@ -170,7 +180,7 @@ def wide_to_long(
         alt_num = alt_idx + 1
         part: dict[str, object] = {
             "respondent_id": work[id_col],
-            "task_id": work["_task_id"],
+            "task_id": tasks,
             "alternative": alt_num,
         }
 
@@ -218,7 +228,7 @@ def _auto_attribute_groups(columns: list[str]) -> dict[str, list[str]]:
     pat = re.compile(r"^(.+?)_?(\d+)$")
     buckets: dict[str, dict[int, str]] = {}
     for col in columns:
-        m = pat.match(col)
+        m = pat.match(str(col))
         if m:
             prefix, num = m.group(1), int(m.group(2))
             buckets.setdefault(prefix, {})[num] = col
@@ -251,12 +261,12 @@ def _detect_dce_matrix_groups(columns: list[str]) -> dict[str, list[str]]:
     prefix_pat = re.compile(r"^(a\d+)[_.](.+)$", re.IGNORECASE)
     alt_attr_pairs: list[tuple[str, str, str]] = []  # (alt_id, attr_id, full_col)
     for col in columns:
-        m = prefix_pat.match(col)
+        m = prefix_pat.match(str(col))
         if m:
             alt_attr_pairs.append((m.group(1).lower(), m.group(2).lower(), col))
 
     if alt_attr_pairs:
-        alts = sorted(set(p[0] for p in alt_attr_pairs))
+        alts = sorted({p[0] for p in alt_attr_pairs}, key=lambda alt: int(alt[1:]))
         attrs = sorted(set(p[1] for p in alt_attr_pairs))
 
         if len(alts) >= 2 and len(attrs) >= 1:
@@ -270,20 +280,20 @@ def _detect_dce_matrix_groups(columns: list[str]) -> dict[str, list[str]]:
                         cols_for_attr.append(lookup[(alt, attr)])
                 if len(cols_for_attr) == len(alts):
                     groups[attr] = cols_for_attr
-            if groups:
+            if groups and [int(alt[1:]) for alt in alts] == list(range(1, len(alts) + 1)):
                 return groups
 
     # Pattern 2: {name}_a{N} — attribute prefix, alternative suffix
     suffix_pat = re.compile(r"^(.+?)_a(\d+)$", re.IGNORECASE)
     name_alt_pairs: list[tuple[str, str, str]] = []  # (attr_name, alt_id, full_col)
     for col in columns:
-        m = suffix_pat.match(col)
+        m = suffix_pat.match(str(col))
         if m:
             name_alt_pairs.append((m.group(1).lower(), m.group(2), col))
 
     if name_alt_pairs:
         attr_names = sorted(set(p[0] for p in name_alt_pairs))
-        alt_ids = sorted(set(p[1] for p in name_alt_pairs))
+        alt_ids = sorted({p[1] for p in name_alt_pairs}, key=int)
 
         if len(alt_ids) >= 2 and len(attr_names) >= 1:
             lookup = {(p[0], p[1]): p[2] for p in name_alt_pairs}
@@ -295,14 +305,14 @@ def _detect_dce_matrix_groups(columns: list[str]) -> dict[str, list[str]]:
                         cols_for_attr.append(lookup[(attr, alt)])
                 if len(cols_for_attr) == len(alt_ids):
                     groups[attr] = cols_for_attr
-            if groups:
+            if groups and list(map(int, alt_ids)) == list(range(1, len(alt_ids) + 1)):
                 return groups
 
     return {}
 
 
 def _guess_id_col(columns: list[str]) -> str | None:
-    lowered = {c.lower(): c for c in columns}
+    lowered = {str(c).lower(): c for c in columns}
     for candidate in ["respondent_id", "id", "ID", "resp_id", "person_id"]:
         if candidate.lower() in lowered:
             return lowered[candidate.lower()]
@@ -310,7 +320,7 @@ def _guess_id_col(columns: list[str]) -> str | None:
 
 
 def _guess_choice_col(columns: list[str]) -> str | None:
-    lowered = {c.lower(): c for c in columns}
+    lowered = {str(c).lower(): c for c in columns}
     for candidate in ["choice", "chosen", "selected"]:
         if candidate.lower() in lowered:
             return lowered[candidate.lower()]
@@ -324,15 +334,28 @@ def normalize_choice_column(
     df: pd.DataFrame,
     choice_col: str,
     alt_col: str,
+    *,
+    id_col: str | None = None,
+    task_col: str | None = None,
 ) -> pd.DataFrame:
     """Normalize a choice column to binary 0/1 indicator format.
 
-    Handles three input formats:
+    Supply respondent and task columns for nonstandard column names.
+    With neither group identified, falls back to row-wise normalisation:
     - Already binary 0/1: returned as-is.
     - Numeric label (e.g. ``choice=2``): compared against ``alt_col`` values.
     - String label (e.g. ``choice="B"``): compared against ``alt_col`` values.
     """
     out = df.copy()
+    if (id_col is None) != (task_col is None):
+        raise ValueError("Supply both respondent and task columns or leave both unspecified.")
+    if id_col is None:
+        id_col = _guess_id_col(out.columns.tolist())
+        named = {str(c).lower(): c for c in out.columns}
+        task_col = next((named[c] for c in ("task_id", "task", "scenario") if c in named), None)
+    if id_col is not None and task_col is not None:
+        out[choice_col] = chosen_row_mask(out, id_col, task_col, alt_col, choice_col).astype(int)
+        return out
     choice_vals = out[choice_col]
     unique = choice_vals.unique()
 
@@ -396,7 +419,7 @@ def _best_match(
     heuristic,
 ) -> tuple[str | None, float]:
     """Find the best column match by name, falling back to a heuristic."""
-    lowered = {c.lower(): c for c in columns}
+    lowered = {str(c).lower(): c for c in columns}
 
     # exact name match (high confidence)
     for candidate in name_candidates:
@@ -604,7 +627,7 @@ def _parse_dictionary_sheet(
         return {}
 
     data_col_set = set(data_columns)
-    data_col_lower = {c.lower(): c for c in data_columns}
+    data_col_lower = {str(c).lower(): c for c in data_columns}
 
     # ── Strategy 0: Hierarchical / Sawtooth-style dictionary ──
     # These have variable names scattered across rows in one column,

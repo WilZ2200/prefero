@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import sys
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+from zipfile import BadZipFile
 
 import pandas as pd
 import streamlit as st
+from openpyxl.utils.exceptions import InvalidFileException
 
 # ── path setup so we can import the backend ────────────────────────
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +22,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from dce_analyzer.apollo import load_apollo_long  # noqa: E402
+from dce_analyzer.data import chosen_row_mask  # noqa: E402
 from dce_analyzer.format_converter import (  # noqa: E402
     _auto_attribute_groups,
     _guess_choice_col,
@@ -27,7 +31,6 @@ from dce_analyzer.format_converter import (  # noqa: E402
     detect_format,
     infer_structure,
     load_excel_with_dictionary,
-    normalize_choice_column,
     wide_to_long,
 )
 from dce_analyzer.simulate import generate_simulated_dce  # noqa: E402
@@ -46,31 +49,73 @@ sidebar_branding()
 st.header("Data")
 st.caption("Upload, generate, or load a discrete-choice dataset, then explore it.")
 
-# Reset button — in sidebar, secondary style
-if st.session_state.get("df") is not None or st.session_state.get("_excel_result") is not None or st.session_state.get("_wide_raw") is not None:
+
+def _clear_import() -> None:
+    for key in ("_excel_result", "_excel_name", "_wide_raw", "_wide_name",
+                "_auto_converted", "_auto_meta", "_auto_error", "_upload_error"):
+        st.session_state.pop(key, None)
+
+
+def _clear_dataset() -> None:
+    st.session_state.update(df=None, data_label="", true_params={}, model_results=None,
+                            model_history=[], bootstrap_results=None, lc_result=None,
+                            lc_bic_comparison=None, lc_best_q=None)
+    for key in ("inferred_columns", "interaction_terms", "bootstrap_run_id", "cv_results",
+                "_generated_report", "_report_run_id", "_report_notes", "_data_warnings"):
+        st.session_state.pop(key, None)
+
+
+if any(st.session_state.get(key) is not None for key in (
+    "df", "_excel_result", "_wide_raw", "_upload_error",
+)):
     if st.sidebar.button("Reset Data", type="secondary", use_container_width=True):
-        for key in ["df", "data_label", "true_params", "model_results", "model_history",
-                     "bootstrap_results", "lc_result", "lc_bic_comparison", "lc_best_q",
-                     "_excel_result", "_excel_name", "_wide_raw", "_wide_name",
-                     "_auto_converted", "_auto_meta",
-                     "inferred_columns",
-                     "_generated_report", "_report_label"]:
-            st.session_state.pop(key, None)
+        _clear_import()
+        _clear_dataset()
+        st.session_state.pop("_upload_identity", None)
+        st.session_state["_uploader_generation"] = st.session_state.get("_uploader_generation", 0) + 1
         st.rerun()
 
 
 # ── helpers ────────────────────────────────────────────────────────
 def _store(df: pd.DataFrame, label: str, true_params: dict | None = None) -> None:
+    _clear_dataset()
+    _clear_import()
     st.session_state.df = df
     st.session_state.data_label = label
     st.session_state.true_params = true_params or {}
-    # reset downstream results when data changes
-    st.session_state.model_results = None
-    st.session_state.model_history = []
-    st.session_state.bootstrap_results = None
-    st.session_state.lc_result = None
-    st.session_state.lc_bic_comparison = None
-    st.session_state.lc_best_q = None
+
+
+def _stage_dataframe(df: pd.DataFrame, file_name: str, label_suffix: str = "") -> None:
+    if df.empty:
+        raise ValueError("The uploaded data sheet has no rows.")
+    if detect_format(df) == "long":
+        _store(df, f"Uploaded: {file_name}{label_suffix}")
+        return
+
+    _clear_import()
+    _clear_dataset()
+    for key in ("wide_attr_select", "wide_id", "wide_choice"):
+        st.session_state.pop(key, None)
+    st.session_state["_wide_raw"] = df
+    st.session_state["_wide_name"] = file_name
+    columns = df.columns.tolist()
+    groups = _auto_attribute_groups(columns)
+    id_col = _guess_id_col(columns)
+    choice_col = _guess_choice_col(columns)
+    if not groups or not choice_col:
+        return
+
+    messages = []
+    try:
+        converted = wide_to_long(df, groups, id_col, choice_col, on_exclusion=messages.append)
+    except ValueError as exc:
+        st.session_state["_auto_error"] = " ".join([*messages, str(exc)])
+        return
+    st.session_state["_auto_converted"] = converted
+    st.session_state["_auto_meta"] = {
+        "id_col": id_col, "choice_col": choice_col, "groups": groups, "warnings": messages,
+        "automatic": True,
+    }
 
 
 @st.cache_data
@@ -263,97 +308,44 @@ with st.expander("Data Format Guide", expanded=True):
 st.subheader("Upload Your Choice Data")
 
 uploaded = st.file_uploader(
-    "Upload a CSV or Excel file",
-    type=["csv", "xlsx", "xls"],
+    "Upload a CSV or .xlsx file",
+    type=["csv", "xlsx"],
+    key=f"choice_upload_{st.session_state.get('_uploader_generation', 0)}",
 )
 if uploaded is not None:
     file_name = uploaded.name
-    is_excel = file_name.lower().endswith((".xlsx", ".xls"))
-
-    # Only parse the file if we haven't already stored results for it.
-    # This prevents re-parsing on every Streamlit rerun.
-    already_parsed = (
-        st.session_state.get("_excel_result") is not None
-        or st.session_state.get("_auto_converted") is not None
-        or st.session_state.get("_wide_raw") is not None
-        or st.session_state.df is not None
-    )
-
-    if not already_parsed:
-        if is_excel:
-            # ── Excel upload with dictionary sheet support ──
-            with st.spinner("Reading Excel file..."):
-                excel_result = load_excel_with_dictionary(uploaded)
-            try:
-                from community_db import log_activity
-                log_activity(st.session_state.get("username", "anonymous"), "data_upload", f"file={file_name}, format=excel")
-            except Exception:
-                pass
-
-            st.session_state["_excel_result"] = excel_result
-            st.session_state["_excel_name"] = file_name
-
-        else:
-            # ── CSV upload (existing logic) ──
-            raw_df = pd.read_csv(uploaded)
-            try:
-                from community_db import log_activity
-                log_activity(st.session_state.get("username", "anonymous"), "data_upload", f"file={file_name}, rows={raw_df.shape[0]}, cols={raw_df.shape[1]}, format=csv")
-            except Exception:
-                pass
-            fmt = detect_format(raw_df)
-
-            if fmt == "long":
-                _store(raw_df, f"Uploaded: {file_name}")
+    identity = (file_name, getattr(uploaded, "file_id", None) or sha256(uploaded.getbuffer()).hexdigest())
+    if st.session_state.get("_upload_identity") != identity:
+        _clear_import()
+        st.session_state["_upload_identity"] = identity
+        try:
+            if file_name.lower().endswith(".xlsx"):
+                with st.spinner("Reading Excel file..."):
+                    excel = load_excel_with_dictionary(uploaded)
+                if excel.data.empty:
+                    raise ValueError("The uploaded data sheet has no rows.")
+                _clear_dataset()
+                st.session_state.pop("dict_mapping_editor", None)
+                st.session_state["_excel_result"] = excel
+                st.session_state["_excel_name"] = file_name
             else:
-                # Auto-detect and try auto-conversion
-                auto_groups = _auto_attribute_groups(raw_df.columns.tolist())
-                auto_id = _guess_id_col(raw_df.columns.tolist())
-                auto_choice = _guess_choice_col(raw_df.columns.tolist())
+                _stage_dataframe(pd.read_csv(uploaded), file_name)
+        except (ValueError, OSError, BadZipFile, InvalidFileException) as exc:
+            st.session_state["_upload_error"] = str(exc)
+        else:
+            st.rerun()
 
-                if auto_groups:
-                    try:
-                        import warnings
-                        with warnings.catch_warnings(record=True):
-                            warnings.simplefilter("always")
-                            auto_long = wide_to_long(
-                                raw_df,
-                                attribute_groups=auto_groups,
-                                id_col=auto_id,
-                                choice_col=auto_choice,
-                            )
-                        st.session_state["_auto_converted"] = auto_long
-                        st.session_state["_auto_meta"] = {
-                            "format": "wide",
-                            "id_col": auto_id,
-                            "choice_col": auto_choice,
-                            "groups": {k: list(v) for k, v in auto_groups.items()},
-                            "result_shape": auto_long.shape,
-                        }
-                        st.session_state["_wide_raw"] = raw_df
-                        st.session_state["_wide_name"] = file_name
-                    except Exception:
-                        # Auto-conversion failed, fall back to manual
-                        st.session_state["_wide_raw"] = raw_df
-                        st.session_state["_wide_name"] = file_name
-                else:
-                    st.session_state["_wide_raw"] = raw_df
-                    st.session_state["_wide_name"] = file_name
-
-    # Show status messages for current state
-    if st.session_state.get("_excel_result") is not None:
-        er = st.session_state["_excel_result"]
+    if error := st.session_state.get("_upload_error"):
+        st.error(f"Could not load the new file. {error}")
+        if st.session_state.df is not None:
+            st.info("The previous dataset is still active.")
+    if excel := st.session_state.get("_excel_result"):
         st.success(
-            f"Uploaded **{st.session_state.get('_excel_name', file_name)}** — "
-            f"Sheets: {', '.join(er.sheet_names)} — "
-            f"Data sheet: **{er.data_sheet_name}** ({er.data.shape[0]} rows)"
+            f"Uploaded **{st.session_state['_excel_name']}**. "
+            f"Data sheet **{excel.data_sheet_name}** has {len(excel.data)} rows."
         )
-        if er.dict_sheet_name:
-            st.info(f"Dictionary sheet detected: **{er.dict_sheet_name}**")
-    elif st.session_state.get("_wide_raw") is not None and not is_excel:
-        wn = st.session_state.get("_wide_name", file_name)
-        wr = st.session_state["_wide_raw"]
-        st.info(f"Uploaded **{wn}** ({wr.shape[0]} rows). Format: **Wide** — conversion needed.")
+        if excel.dict_sheet_name:
+            st.info(f"Dictionary sheet detected: **{excel.dict_sheet_name}**")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -411,7 +403,7 @@ with st.expander("Alternative: Generate or Load Sample Data", expanded=False):
             _store(output.data, "Simulated Choice Data", output.true_parameters)
             try:
                 from community_db import log_activity
-                log_activity(st.session_state.get("username", "anonymous"), "data_simulate", f"N={n_individuals}, T={n_tasks}, J={n_alts}")
+                log_activity("data_simulate")
             except Exception:
                 pass
             st.success("Simulated dataset generated.")
@@ -428,7 +420,7 @@ with st.expander("Alternative: Generate or Load Sample Data", expanded=False):
             _store(df, "Apollo swiss_route_choice")
             try:
                 from community_db import log_activity
-                log_activity(st.session_state.get("username", "anonymous"), "data_apollo", "swiss_route_choice")
+                log_activity("data_apollo")
             except Exception:
                 pass
             st.success("Apollo dataset loaded.")
@@ -465,6 +457,7 @@ if st.session_state.get("_excel_result") is not None:
     excel_result = st.session_state["_excel_result"]
     raw_df = excel_result.data
     mapping = excel_result.column_mapping
+    excel_name = st.session_state["_excel_name"]
 
     with st.expander("Column Mapping (from Dictionary Sheet)", expanded=True):
         if mapping:
@@ -491,117 +484,27 @@ if st.session_state.get("_excel_result") is not None:
             col_a, col_b = st.columns(2)
             with col_a:
                 if st.button("Apply Mapping & Load", type="primary"):
-                    # rebuild mapping from edited table
-                    final_mapping = {}
-                    for _, row in edited_map.iterrows():
-                        coded = str(row["Coded Column"]).strip()
-                        readable = str(row["Readable Name"]).strip()
-                        if coded and readable and coded != "nan" and readable != "nan":
-                            final_mapping[coded] = readable
-
-                    renamed_df = apply_column_mapping(raw_df, final_mapping)
-
-                    # check if result is wide or long
-                    fmt = detect_format(renamed_df)
-                    if fmt == "wide":
-                        _excel_wide_name = st.session_state.get("_excel_name", "excel")
-                        st.session_state["_wide_raw"] = renamed_df
-                        st.session_state["_wide_name"] = _excel_wide_name
-                        st.session_state.pop("_excel_result", None)
-                        # Try auto-conversion
-                        _ag = _auto_attribute_groups(renamed_df.columns.tolist())
-                        _ai = _guess_id_col(renamed_df.columns.tolist())
-                        _ac = _guess_choice_col(renamed_df.columns.tolist())
-                        if _ag:
-                            try:
-                                import warnings as _w
-                                with _w.catch_warnings(record=True):
-                                    _w.simplefilter("always")
-                                    _al = wide_to_long(renamed_df, attribute_groups=_ag, id_col=_ai, choice_col=_ac)
-                                st.session_state["_auto_converted"] = _al
-                                st.session_state["_auto_meta"] = {
-                                    "format": "wide",
-                                    "id_col": _ai, "choice_col": _ac,
-                                    "groups": {k: list(v) for k, v in _ag.items()},
-                                    "result_shape": _al.shape,
-                                }
-                            except Exception:
-                                pass
-                        st.rerun()
+                    pairs = edited_map.dropna().astype(str).apply(lambda col: col.str.strip())
+                    pairs = pairs[(pairs != "").all(axis=1)]
+                    source_names = pairs["Coded Column"]
+                    if source_names.duplicated().any() or not source_names.isin(raw_df.columns).all():
+                        st.error("Each coded column in the mapping must exist and appear only once.")
                     else:
-                        _store(renamed_df, f"Uploaded: {st.session_state.get('_excel_name', 'excel')} (mapped)")
-                        st.session_state.pop("_excel_result", None)
-                        st.session_state.pop("_excel_name", None)
-                        st.success(f"Columns renamed and loaded: {renamed_df.shape[0]} rows x {renamed_df.shape[1]} columns")
+                        final_mapping = dict(zip(source_names, pairs["Readable Name"]))
+                        _stage_dataframe(apply_column_mapping(raw_df, final_mapping), excel_name, " (mapped)")
                         st.rerun()
 
             with col_b:
                 if st.button("Skip Mapping & Load Raw"):
-                    fmt = detect_format(raw_df)
-                    if fmt == "wide":
-                        _excel_wide_name = st.session_state.get("_excel_name", "excel")
-                        st.session_state["_wide_raw"] = raw_df
-                        st.session_state["_wide_name"] = _excel_wide_name
-                        st.session_state.pop("_excel_result", None)
-                        # Try auto-conversion
-                        _ag = _auto_attribute_groups(raw_df.columns.tolist())
-                        _ai = _guess_id_col(raw_df.columns.tolist())
-                        _ac = _guess_choice_col(raw_df.columns.tolist())
-                        if _ag:
-                            try:
-                                import warnings as _w
-                                with _w.catch_warnings(record=True):
-                                    _w.simplefilter("always")
-                                    _al = wide_to_long(raw_df, attribute_groups=_ag, id_col=_ai, choice_col=_ac)
-                                st.session_state["_auto_converted"] = _al
-                                st.session_state["_auto_meta"] = {
-                                    "format": "wide",
-                                    "id_col": _ai, "choice_col": _ac,
-                                    "groups": {k: list(v) for k, v in _ag.items()},
-                                    "result_shape": _al.shape,
-                                }
-                            except Exception:
-                                pass
-                        st.rerun()
-                    else:
-                        _store(raw_df, f"Uploaded: {st.session_state.get('_excel_name', 'excel')} (raw)")
-                        st.session_state.pop("_excel_result", None)
-                        st.session_state.pop("_excel_name", None)
-                        st.success("Loaded with original column names.")
-                        st.rerun()
+                    _stage_dataframe(raw_df, excel_name, " (raw)")
+                    st.rerun()
         else:
-            st.warning("No column mapping could be extracted from the dictionary sheet.")
             if excel_result.dictionary is not None:
+                st.warning("No column mapping could be extracted from the dictionary sheet.")
                 st.markdown("**Dictionary sheet preview:**")
                 st.dataframe(excel_result.dictionary.head(30), use_container_width=True)
             if st.button("Load Data Without Mapping", type="primary"):
-                fmt = detect_format(raw_df)
-                if fmt == "wide":
-                    st.session_state["_wide_raw"] = raw_df
-                    st.session_state["_wide_name"] = st.session_state.get("_excel_name", "excel")
-                    # Try auto-conversion
-                    _ag = _auto_attribute_groups(raw_df.columns.tolist())
-                    _ai = _guess_id_col(raw_df.columns.tolist())
-                    _ac = _guess_choice_col(raw_df.columns.tolist())
-                    if _ag:
-                        try:
-                            import warnings as _w
-                            with _w.catch_warnings(record=True):
-                                _w.simplefilter("always")
-                                _al = wide_to_long(raw_df, attribute_groups=_ag, id_col=_ai, choice_col=_ac)
-                            st.session_state["_auto_converted"] = _al
-                            st.session_state["_auto_meta"] = {
-                                "format": "wide",
-                                "id_col": _ai, "choice_col": _ac,
-                                "groups": {k: list(v) for k, v in _ag.items()},
-                                "result_shape": _al.shape,
-                            }
-                        except Exception:
-                            pass
-                else:
-                    _store(raw_df, f"Uploaded: {st.session_state.get('_excel_name', 'excel')}")
-                st.session_state.pop("_excel_result", None)
-                st.session_state.pop("_excel_name", None)
+                _stage_dataframe(raw_df, excel_name)
                 st.rerun()
 
 # ── Auto-conversion confirmation card ─────────────────────
@@ -609,18 +512,15 @@ if st.session_state.get("_auto_converted") is not None:
     meta = st.session_state.get("_auto_meta", {})
     auto_long = st.session_state["_auto_converted"]
 
-    st.success("Auto-detected: **Wide format** -> **Long format**")
+    st.success("Review the converted data before loading it.")
 
     with st.container():
         info_parts = []
         if meta.get("id_col"):
-            info_parts.append(f"ID column: **{meta['id_col']}** (detected)")
+            info_parts.append(f"ID column: **{meta['id_col']}**")
         else:
             info_parts.append("ID column: *(auto-generated)*")
-        if meta.get("choice_col"):
-            info_parts.append(f"Choice column: **{meta['choice_col']}** (detected)")
-        else:
-            info_parts.append("Choice column: *(auto-generated)*")
+        info_parts.append(f"Choice column: **{meta['choice_col']}**")
 
         groups = meta.get("groups", {})
         if groups:
@@ -633,14 +533,15 @@ if st.session_state.get("_auto_converted") is not None:
         for part in info_parts:
             st.markdown(f"- {part}")
 
+    for message in meta.get("warnings", []):
+        st.warning(message)
+
     acc_col, edit_col = st.columns(2)
     with acc_col:
         if st.button("Accept & Continue", type="primary", key="_auto_accept"):
-            _store(auto_long, f"Uploaded: {st.session_state.get('_wide_name', 'file')} (auto-converted)")
-            st.session_state.pop("_auto_converted", None)
-            st.session_state.pop("_auto_meta", None)
-            st.session_state.pop("_wide_raw", None)
-            st.session_state.pop("_wide_name", None)
+            conversion = "auto-converted" if meta.get("automatic") else "converted"
+            _store(auto_long, f"Uploaded: {st.session_state['_wide_name']} ({conversion})")
+            st.session_state["_data_warnings"] = meta.get("warnings", [])
             st.rerun()
     with edit_col:
         if st.button("Edit Settings", key="_auto_edit"):
@@ -659,6 +560,8 @@ if st.session_state.get("_auto_converted") is not None:
 if st.session_state.get("_wide_raw") is not None:
     raw_df = st.session_state["_wide_raw"]
     with st.expander("Wide-to-Long Conversion", expanded=True):
+        if error := st.session_state.get("_auto_error"):
+            st.warning(f"Automatic conversion could not proceed. {error}")
         auto_groups = _auto_attribute_groups(raw_df.columns.tolist())
 
         if auto_groups:
@@ -682,41 +585,33 @@ if st.session_state.get("_wide_raw") is not None:
         wide_id_col = w1.selectbox(
             "ID column (wide)",
             [None] + raw_cols,
-            index=0,
+            index=([None] + raw_cols).index(_guess_id_col(raw_cols)),
             key="wide_id",
         )
         wide_choice_col = w2.selectbox(
             "Choice column (wide)",
             [None] + raw_cols,
-            index=0,
+            index=([None] + raw_cols).index(_guess_choice_col(raw_cols)),
             key="wide_choice",
         )
 
-        # preview
-        if selected_attrs and st.button("Convert to Long Format", type="primary"):
+        if st.button("Convert to Long Format", type="primary", disabled=not selected_attrs or not wide_choice_col):
             groups = {k: auto_groups[k] for k in selected_attrs}
-            import warnings
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                try:
-                    long_df = wide_to_long(
-                        raw_df,
-                        attribute_groups=groups,
-                        id_col=wide_id_col,
-                        choice_col=wide_choice_col,
-                    )
-                    # show any warnings (e.g. dropped rows with missing choices)
-                    for w in caught:
-                        st.warning(str(w.message))
-                    _store(long_df, f"Uploaded: {st.session_state['_wide_name']} (converted)")
-                    st.session_state.pop("_wide_raw", None)
-                    st.session_state.pop("_wide_name", None)
-                    st.success(f"Converted to long format: {long_df.shape[0]} rows x {long_df.shape[1]} columns.")
-                    st.rerun()
-                except Exception as exc:
-                    for w in caught:
-                        st.warning(str(w.message))
-                    st.error(f"Conversion failed: {exc}")
+            messages = []
+            try:
+                long_df = wide_to_long(raw_df, groups, wide_id_col, wide_choice_col,
+                                       on_exclusion=messages.append)
+            except ValueError as exc:
+                for message in messages:
+                    st.warning(message)
+                st.error(f"Conversion failed: {exc}")
+            else:
+                st.session_state["_auto_converted"] = long_df
+                st.session_state["_auto_meta"] = {
+                    "id_col": wide_id_col, "choice_col": wide_choice_col, "groups": groups,
+                    "warnings": messages, "automatic": False,
+                }
+                st.rerun()
 
 # ── guard: stop here if nothing loaded yet ─────────────────────────
 df: pd.DataFrame | None = st.session_state.df
@@ -732,6 +627,8 @@ if df is None:
 st.divider()
 st.subheader("2. Data preview")
 st.markdown(f"**Dataset:** {st.session_state.data_label}  &mdash;  `{df.shape[0]}` rows x `{df.shape[1]}` columns")
+for message in st.session_state.get("_data_warnings", []):
+    st.warning(message)
 st.dataframe(df.head(50), use_container_width=True)
 
 # ground-truth parameters (simulated data only)
@@ -744,15 +641,15 @@ st.divider()
 st.subheader("3. Panel structure")
 
 _guess_cols = {
-    "id": ["respondent_id", "id", "ID"],
-    "task": ["task_id", "task"],
-    "alt": ["alternative", "alt"],
-    "choice": ["choice", "chosen"],
+    "id": ["respondent_id", "id", "resp_id", "person_id", "participant_id"],
+    "task": ["task_id", "task", "scenario", "question", "situation"],
+    "alt": ["alternative", "alt", "option", "alt_id"],
+    "choice": ["choice", "chosen", "selected", "response"],
 }
 
 
 def _find(candidates: list[str]) -> str | None:
-    lowered = {c.lower(): c for c in df.columns}
+    lowered = {str(c).lower(): c for c in df.columns}
     for t in candidates:
         if t.lower() in lowered:
             return lowered[t.lower()]
@@ -768,8 +665,8 @@ detected_choice = _find(_guess_cols["choice"])
 if detected_task is None and detected_id is not None:
     st.warning("No task column detected. Generating `task_id` from row ordering.")
     if detected_alt is not None:
-        n_alts = df[detected_alt].nunique()
-        df["task_id"] = df.groupby(detected_id).cumcount() // n_alts + 1
+        n_alts = max(1, df[detected_alt].nunique())
+        df["task_id"] = df.groupby(detected_id, observed=True).cumcount() // n_alts + 1
     else:
         df["task_id"] = df.groupby(detected_id).cumcount() + 1
     st.session_state.df = df
@@ -784,8 +681,9 @@ if detected_alt is None and detected_task is not None and detected_id is not Non
 p1, p2, p3, p4 = st.columns(4)
 if detected_id:
     p1.metric("Individuals", f"{df[detected_id].nunique():,}")
-if detected_task:
-    p2.metric("Tasks", f"{df[detected_task].nunique():,}")
+if detected_id and detected_task:
+    n_tasks = len(df[[detected_id, detected_task]].dropna().drop_duplicates())
+    p2.metric("Choice tasks", f"{n_tasks:,}")
 if detected_alt:
     p3.metric("Alternatives", f"{df[detected_alt].nunique():,}")
 p4.metric("Total rows", f"{len(df):,}")
@@ -859,20 +757,20 @@ if missing.sum() > 0:
     st.dataframe(missing_df, use_container_width=True, hide_index=True)
 
 # ── 7  Choice Frequency ───────────────────────────────────────────
-if detected_choice and detected_alt:
+if all((detected_id, detected_task, detected_alt, detected_choice)):
     st.divider()
     st.subheader("7. Choice frequency")
-    chosen_rows = df[df[detected_choice] == 1]
-    freq = chosen_rows[detected_alt].value_counts().sort_index()
-    c_left, c_right = st.columns(2)
-    with c_left:
-        st.dataframe(
-            freq.reset_index().rename(columns={"index": "Alternative", detected_alt: "Alternative", "count": "Times chosen"}),
-            use_container_width=True,
-            hide_index=True,
-        )
-    with c_right:
-        st.bar_chart(freq)
+    try:
+        chosen = chosen_row_mask(df, detected_id, detected_task, detected_alt, detected_choice)
+    except ValueError as exc:
+        st.warning(f"Choice counts are unavailable. {exc}")
+    else:
+        alternatives = df[detected_alt].drop_duplicates()
+        freq = df.loc[chosen, detected_alt].value_counts().reindex(alternatives, fill_value=0)
+        table = freq.rename_axis("Alternative").reset_index(name="Times chosen")
+        c_left, c_right = st.columns(2)
+        c_left.dataframe(table, use_container_width=True, hide_index=True)
+        c_right.bar_chart(table, x="Alternative", y="Times chosen")
 
 # ── 8  Distribution Plots ─────────────────────────────────────────
 if numeric_cols:

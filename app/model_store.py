@@ -1,20 +1,7 @@
 # Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
 # Licensed under dual license: AGPL-3.0 (open-source) or commercial. See LICENSE.
 
-"""Per-user model persistence via HF Dataset.
-
-Each user's saved models are stored as ``models/{username}.json`` in the
-private HF Dataset repo ``Wil2200/prefero-data``.  Models survive container
-restarts **and** redeployments.
-
-Public API
-----------
-- save_model(username, model_entry) -> bool
-- load_models(username) -> list[dict]
-- delete_saved_model(username, index) -> bool
-- serialize_model_entry(entry) -> dict
-- deserialize_model_entry(data) -> dict
-"""
+"""Model serialisation and optional private storage for trusted integrations."""
 
 from __future__ import annotations
 
@@ -22,9 +9,10 @@ import json
 import logging
 import math
 import os
-import tempfile
+import re
 import threading
 from datetime import datetime, timezone
+from io import BytesIO
 
 import numpy as np
 import pandas as pd
@@ -53,7 +41,6 @@ def _sanitize_list(lst):
             out.append(item)
     return out
 
-_HF_DATASET_REPO = "Wil2200/prefero-data"
 _MAX_MODELS_PER_USER = 10
 _lock = threading.Lock()
 
@@ -62,55 +49,44 @@ _lock = threading.Lock()
 # HF helpers (mirrors community_db.py pattern)
 # ---------------------------------------------------------------------------
 
-def _hf_token() -> str | None:
-    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+def _model_path(username: str) -> str:
+    if not re.fullmatch(r"[\w -]{2,64}", username):
+        raise ValueError("Invalid model storage identifier.")
+    return f"models/{username}.json"
 
 
-def _load_user_models_from_hf(username: str) -> list[dict]:
-    """Download ``models/{username}.json`` from the HF Dataset repo."""
-    token = _hf_token()
-    if not token:
-        logger.debug("No HF token -- skipping model load for %s", username)
-        return []
+def _load_remote(username):
+    from huggingface_hub import HfApi
+    from huggingface_hub.errors import RemoteEntryNotFoundError
+
+    repo = os.environ.get("PREFERO_MODEL_STORAGE_REPO")
+    token = os.environ.get("PREFERO_MODEL_STORAGE_TOKEN")
+    if not repo or not token:
+        raise ValueError("Private model storage is disabled.")
+    api = HfApi(token=token)
+    info = api.repo_info(repo, repo_type="dataset")
+    if not info.private or not info.sha:
+        raise ValueError("Model storage requires a private dataset with a Git revision.")
+    path = _model_path(username)
     try:
-        from huggingface_hub import hf_hub_download
-        path = hf_hub_download(
-            repo_id=_HF_DATASET_REPO,
-            filename=f"models/{username}.json",
-            repo_type="dataset",
-            token=token,
-        )
-        with open(path) as f:
-            data = json.load(f)
-        return data.get("models", [])
-    except Exception as exc:
-        logger.debug("Failed to load models for %s from HF: %s", username, exc)
-        return []
+        local = api.hf_hub_download(repo, path, repo_type="dataset", revision=info.sha)
+    except RemoteEntryNotFoundError:
+        models = []
+    else:
+        with open(local, encoding="utf-8") as handle:
+            models = json.load(handle)["models"]
+    return models, (api, repo, path, info.sha)
 
 
-def _save_user_models_to_hf(username: str, models: list[dict]) -> None:
-    """Upload ``models/{username}.json`` to the HF Dataset repo."""
-    token = _hf_token()
-    if not token:
-        return
-    try:
-        from huggingface_hub import HfApi
+def _save_remote(models, context):
+    from huggingface_hub import CommitOperationAdd
 
-        data = {"models": models}
-        tmp = os.path.join(tempfile.gettempdir(), f"prefero_models_{username}.json")
-        with open(tmp, "w") as f:
-            json.dump(data, f)
-
-        api = HfApi(token=token)
-        api.upload_file(
-            path_or_fileobj=tmp,
-            path_in_repo=f"models/{username}.json",
-            repo_id=_HF_DATASET_REPO,
-            repo_type="dataset",
-        )
-        logger.info("Saved %d models for user %s to HF", len(models), username)
-    except Exception as exc:
-        logger.warning("Failed to save models for %s to HF: %s", username, exc)
+    api, repo, path, parent = context
+    payload = BytesIO(json.dumps({"models": models}, allow_nan=False).encode("utf-8"))
+    api.create_commit(
+        repo, [CommitOperationAdd(path_in_repo=path, path_or_fileobj=payload)],
+        repo_type="dataset", parent_commit=parent, commit_message="Update saved models",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -442,16 +418,14 @@ def save_model(username: str, model_entry: dict) -> bool:
     Returns ``True`` on success.
     """
     with _lock:
-        models = _load_user_models_from_hf(username)
-        if len(models) >= _MAX_MODELS_PER_USER:
-            logger.warning(
-                "User %s already has %d models (limit %d)",
-                username, len(models), _MAX_MODELS_PER_USER,
-            )
+        try:
+            models, context = _load_remote(username)
+            if len(models) >= _MAX_MODELS_PER_USER:
+                return False
+            _save_remote([*models, serialize_model_entry(model_entry)], context)
+        except Exception:
+            logger.warning("Could not save a model.")
             return False
-        serialized = serialize_model_entry(model_entry)
-        models.append(serialized)
-        _save_user_models_to_hf(username, models)
         return True
 
 
@@ -461,7 +435,11 @@ def load_models(username: str) -> list[dict]:
     Returns a list of deserialized model_history-compatible dicts.
     """
     with _lock:
-        raw_models = _load_user_models_from_hf(username)
+        try:
+            raw_models, _ = _load_remote(username)
+        except Exception:
+            logger.warning("Could not read saved models.")
+            return []
     result = []
     for m in raw_models:
         try:
@@ -477,10 +455,12 @@ def delete_saved_model(username: str, index: int) -> bool:
     Returns ``True`` on success.
     """
     with _lock:
-        models = _load_user_models_from_hf(username)
-        if index < 0 or index >= len(models):
-            logger.warning("Invalid index %d for user %s (has %d models)", index, username, len(models))
+        try:
+            models, context = _load_remote(username)
+            if index < 0 or index >= len(models):
+                return False
+            _save_remote(models[:index] + models[index + 1:], context)
+        except Exception:
+            logger.warning("Could not delete a saved model.")
             return False
-        models.pop(index)
-        _save_user_models_to_hf(username, models)
         return True

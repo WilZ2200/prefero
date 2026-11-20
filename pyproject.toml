@@ -1,20 +1,32 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel", "packaging>=24.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dce-analysis-tool"
 version = "0.2.1"
-description = "Discrete choice analysis toolkit with an app, simulated data, and an Apollo data bridge."
+description = "Discrete choice analysis toolkit with a Streamlit app, simulated data, and an Apollo data bridge."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "LICENSE-AGPL", "LICENSE-COMMERCIAL"]
 dependencies = [
-  "numpy>=1.24",
-  "pandas>=2.0",
-  "scipy>=1.11",
-  "torch>=2.2",
-  "streamlit>=1.31",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "scipy>=1.12",
+  "torch>=2.6",
+  "streamlit>=1.63",
+  "plotly>=7.0",
+  "openpyxl>=3.1.5",
+  "huggingface-hub>=1.30",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Repository = "https://github.com/WilZ2200/prefero"
+Issues = "https://github.com/WilZ2200/prefero/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -1,70 +1,7 @@
-# Prefero — GPU-Enabled DCE Analysis Tool
+# Prefero development guide
 
-## Project Overview
+Prefero combines a Python estimation package with a Streamlit app and command-line examples. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for Python 3.12 setup, test commands and release guidance.
 
-A GPU-accelerated discrete choice experiment (DCE) analysis toolkit for mixed logit estimation, built with PyTorch. This project combines a reusable Python library, interactive Streamlit app, and CLI tools.
+The canonical app entry point is `app/Home.py`. Keep estimation logic in `src/dce_analyzer/` and use `ChoiceTensors` as the model input. Convert supported wide data to long format before estimating. Keep CLI scripts thin and preserve older supported entry points.
 
-## Tech Stack
-
-- **Language:** Python 3.10+
-- **Core:** PyTorch (GPU/autodiff), PyTorch (L-BFGS optimizer for CL/MXL/GMNL); scipy for Latent Class, numpy, pandas
-- **UI:** Streamlit
-- **Package:** setuptools with `src/` layout
-
-## Project Structure
-
-```
-src/dce_analyzer/       # Core estimation engine (Python package)
-  config.py             # ModelSpec, VariableSpec dataclasses
-  data.py               # Long-format data loading & validation → ChoiceTensors
-  model.py              # MixedLogitEstimator, ConditionalLogitEstimator
-  latent_class.py       # LatentClassEstimator (Q discrete segments, softmax class probs)
-  pipeline.py           # estimate_dataframe() orchestration & output saving
-  simulate.py           # generate_simulated_dce() synthetic data generator
-  apollo.py             # Apollo dataset downloader & long-format converter
-
-app/streamlit_app.py    # Interactive Streamlit web UI
-scripts/                # CLI entry points (generate data, fetch Apollo, run estimation)
-data/                   # raw/, generated/, processed/ datasets
-outputs/                # Estimation results (CSV + JSON)
-```
-
-## Key Concepts
-
-- **Long-format data:** One row per alternative per task per individual
-- **Mixed logit:** Random coefficients with fixed/normal/lognormal distributions
-- **Halton sequences:** Quasi-Monte Carlo draws for simulation
-
-## Development Guidelines
-
-- All estimation code lives in `src/dce_analyzer/` — keep it modular
-- Data must always be in long format before estimation
-- Use `ChoiceTensors` as the standard internal data representation
-- PyTorch tensors for all numerical computation (enables GPU + autodiff)
-- Shared tensor-native L-BFGS for CL/MXL/GMNL; preserve dedicated Latent Class optimization
-- Follow existing patterns in model.py for new estimator variants
-- Scripts in `scripts/` are thin CLI wrappers around library functions
-
-## Running the Project
-
-```bash
-# Setup
-pip install -e .
-
-# Generate simulated data
-python scripts/generate_simulated_data.py --n-individuals 300 --n-tasks 8 --n-alts 3
-
-# Fetch real Apollo data
-python scripts/fetch_apollo_data.py --dataset swiss_route_choice
-
-# Run estimation
-python scripts/run_estimation.py \
-  --data data/generated/simulated_choice_data.csv \
-  --id-col respondent_id --task-col task_id --alt-col alternative --choice-col choice \
-  --variables "price:normal,time:normal,comfort:fixed" \
-  --model mixed --draws 200
-
-# Streamlit app
-streamlit run app/streamlit_app.py
-```
-
+Conditional logit, mixed logit and GMNL share the PyTorch optimiser. Latent class uses dedicated estimators. Changes to likelihoods or parameter layouts should preserve the correspondence between public model specifications, saved coefficients, inference and predictions.
