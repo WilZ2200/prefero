@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -20,6 +22,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-tasks", type=int, default=8)
     parser.add_argument("--n-alts", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--utility-columns", action="store_true",
+        help="Include the transformed attributes and alternative indicators used by the simulator.",
+    )
     parser.add_argument(
         "--out",
         type=Path,
@@ -46,7 +52,13 @@ def main() -> None:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.truth_out.parent.mkdir(parents=True, exist_ok=True)
-    output.data.to_csv(args.out, index=False)
+    data = output.data
+    if args.utility_columns:
+        data["log1p_price"] = np.log1p(data["price"])
+        data["time_10min"] = data["time"] / 10
+        for alternative in range(2, args.n_alts + 1):
+            data[f"asc_alt_{alternative}"] = data["alternative"].eq(alternative).astype(int)
+    data.to_csv(args.out, index=False)
     with open(args.truth_out, "w", encoding="utf-8") as handle:
         json.dump(output.true_parameters, handle, indent=2, default=str)
 

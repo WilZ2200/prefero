@@ -25,3 +25,26 @@ Data analysis Plan.md
 # Runtime user databases are not source assets
 app/*.db
 app/*.db-*
+
+# Local configuration and private research materials
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.streamlit/secrets.toml
+credentials.json
+credentials.toml
+service-account.json
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite*-wal
+*.sqlite*-shm
+*.sqlite*-journal
+paper/
+papers/
+manuscript/
+manuscripts/

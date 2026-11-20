@@ -2,37 +2,25 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1000 prefero
 
-# Copy requirements first for caching
-COPY requirements.txt .
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
+COPY pyproject.toml README.md LICENSE LICENSE-AGPL LICENSE-COMMERCIAL ./
 COPY src/ src/
-COPY app/ app/
-COPY data/ data/
-COPY .streamlit/ .streamlit/
-COPY pyproject.toml .
-COPY README.md .
+RUN pip install --no-cache-dir --no-deps . && pip check
 
-# Install the package
-RUN pip install --no-cache-dir -e .
+COPY --chown=prefero:prefero app/ app/
+COPY --chown=prefero:prefero data/test_dce.xlsx data/test_dce.xlsx
+COPY .streamlit/config.toml .streamlit/config.toml
+RUN mkdir -p data/raw data/processed data/generated \
+    && chown prefero:prefero data/raw data/processed data/generated
 
-# Expose Streamlit port
+ENV HOME=/home/prefero
+USER prefero
 EXPOSE 7860
-
-# Health check
 HEALTHCHECK CMD curl --fail http://localhost:7860/_stcore/health || exit 1
-
-# Run Streamlit
-CMD ["streamlit", "run", "app/Home.py", \
-     "--server.port=7860", \
-     "--server.address=0.0.0.0", \
-     "--server.headless=true", \
-     "--browser.gatherUsageStats=false"]
+CMD ["streamlit", "run", "app/Home.py", "--server.port=7860", "--server.address=0.0.0.0"]

@@ -4,6 +4,7 @@
 
 The parameter layout and likelihood belong to the calling model. Scaling by
 the number of choice tasks keeps the stopping tolerance independent of N*T.
+Callers can supply an objective in standardised parameter units.
 """
 from dataclasses import dataclass
 from typing import Callable
@@ -28,6 +29,29 @@ def synchronize(device: torch.device) -> None:
         torch.mps.synchronize()
     elif device.type == 'cuda':
         torch.cuda.synchronize(device)
+
+
+def rescale_parameters(
+    theta: np.ndarray,
+    multipliers: np.ndarray,
+    offsets: np.ndarray,
+    positive: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map parameter units and return the diagonal of the transformation Jacobian.
+
+    Multipliers act on standard deviations after softplus and on other
+    coefficients directly. Offsets apply to the location of lognormal tastes.
+    """
+    output = theta * multipliers + offsets
+    jacobian = multipliers.copy()
+    raw_sd = theta[positive]
+    scale = multipliers[positive]
+    sd = np.maximum(np.logaddexp(0.0, raw_sd) * scale, np.finfo(float).tiny)
+    transformed = sd + np.log(-np.expm1(-sd))
+    output[positive] = transformed
+    log_gradient = np.log(scale) - np.logaddexp(0.0, -raw_sd) + np.logaddexp(0.0, -transformed)
+    jacobian[positive] = np.exp(log_gradient)
+    return output, jacobian
 
 
 def fit_lbfgs(objective: Callable, initial, *, device, maxiter: int,

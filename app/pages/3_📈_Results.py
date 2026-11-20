@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +29,8 @@ if str(APP_DIR) not in sys.path:
 from scipy.stats import norm as sp_norm, lognorm  # noqa: E402
 from dce_analyzer.model import EstimationResult  # noqa: E402
 from dce_analyzer.latent_class import LatentClassResult  # noqa: E402
-from dce_analyzer.wtp import compute_wtp  # noqa: E402
+from dce_analyzer.prediction import predict_entry  # noqa: E402
+from dce_analyzer.wtp import WTP_ESTIMAND, compute_wtp  # noqa: E402
 from utils import init_session_state, require_data, sidebar_branding, slowbro_next_step  # noqa: E402
 
 init_session_state()
@@ -69,6 +71,22 @@ def _significance(p: float) -> str:
     return ""
 
 
+def _show_predictions():
+    st.subheader("Predicted best-choice shares")
+    st.caption("Average choice probabilities on the fitted dataset, integrating over any modelled heterogeneity.")
+    try:
+        share_df = predict_entry(st.session_state.df, res)
+    except ValueError as exc:
+        st.info(str(exc))
+        return
+    st.dataframe(share_df, use_container_width=True, hide_index=True)
+    plot_data = share_df.melt(id_vars="Alternative", var_name="Type", value_name="Share")
+    plot_data["Alternative"] = plot_data["Alternative"].astype(str)
+    chart = px.bar(plot_data, x="Alternative", y="Share", color="Type", barmode="group")
+    chart.update_layout(yaxis_tickformat=".1%", height=400)
+    st.plotly_chart(chart, use_container_width=True, key="share_plot")
+
+
 est_df = estimation.estimates.drop(columns=["theta_index"], errors="ignore").copy()
 has_se = "std_error" in est_df.columns and est_df["std_error"].notna().any()
 if not has_se:
@@ -107,6 +125,8 @@ info_cols = st.columns(3)
 info_cols[0].metric("Parameters", estimation.n_parameters)
 info_cols[1].metric("Observations", estimation.n_observations)
 info_cols[2].metric("Individuals", estimation.n_individuals)
+if not estimation.success:
+    st.stop()
 
 # LC convergence diagnostics on Results page
 if is_lc:
@@ -297,6 +317,8 @@ if is_lc:
             mime="text/csv",
         )
 
+    _show_predictions()
+
     # HTML report for LC
     st.divider()
     st.subheader("Summary Report")
@@ -308,8 +330,8 @@ if is_lc:
         "th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }",
         "th { background-color: #f5f5f5; }",
         "</style></head><body>",
-        f"<h1>Estimation Report: {run_label}</h1>",
-        f"<p>Model type: <b>{model_type}</b> ({estimation.n_classes} classes)</p>",
+        f"<h1>Estimation Report: {escape(run_label)}</h1>",
+        f"<p>Model type: <b>{escape(model_type)}</b> ({estimation.n_classes} classes)</p>",
         "<h2>Model Fit</h2>",
         "<table><tr>",
         f"<th>Log-Likelihood</th><td>{estimation.log_likelihood:.4f}</td>",
@@ -463,10 +485,7 @@ else:
 
     with tab_wtp:
         st.subheader("Willingness to Pay (WTP)")
-        st.caption(
-            "WTP measures how much a respondent would pay for a one-unit "
-            "improvement in an attribute: WTP = -beta_attribute / beta_cost."
-        )
+        st.caption(WTP_ESTIMAND)
 
         param_names = est_df["parameter"].tolist()
         candidate_vars = []
@@ -501,11 +520,6 @@ else:
                 wtp_df = compute_wtp(estimation, cost_variable=cost_variable)
 
                 if not wtp_df.empty:
-                    try:
-                        from community_db import log_activity
-                        log_activity(st.session_state.get("username", "anonymous"), "wtp_computed", f"cost_var={cost_variable}")
-                    except Exception:
-                        pass
                     st.dataframe(wtp_df, use_container_width=True, hide_index=True)
 
                     wtp_has_se = wtp_df["wtp_std_error"].notna().any()
@@ -561,76 +575,7 @@ else:
             st.info("WTP requires at least two estimated parameters (one cost, one attribute).")
 
     with tab_predictions:
-        st.subheader("Predicted choice shares")
-
-        # Use expanded df if available (handles dummy coding / interactions)
-        df: pd.DataFrame = res.get("expanded_df", st.session_state.df)
-        if df is None:
-            df = st.session_state.df
-        if spec is not None:
-            try:
-                from dce_analyzer.data import prepare_choice_tensors  # noqa: E402
-                import torch
-
-                tensors = prepare_choice_tensors(df, spec, device=torch.device("cpu"))
-
-                X_np = tensors.X.cpu().numpy()
-                betas = []
-                for v in spec.variables:
-                    param_name = f"beta_{v.name}" if v.distribution == "fixed" else f"mu_{v.name}"
-                    match = est_df[est_df["parameter"] == param_name]
-                    if len(match) == 1:
-                        betas.append(float(match.iloc[0]["estimate"]))
-                    else:
-                        betas.append(0.0)
-                betas_np = np.array(betas)
-
-                V = X_np @ betas_np
-                exp_V = np.exp(V - V.max(axis=1, keepdims=True))
-                probs = exp_V / exp_V.sum(axis=1, keepdims=True)
-                pred_shares = probs.mean(axis=0)
-
-                y_np = tensors.y.cpu().numpy()
-                actual_counts = np.bincount(y_np, minlength=tensors.n_alts)
-                actual_shares = actual_counts / actual_counts.sum()
-
-                alt_labels = [f"Alt {i + 1}" for i in range(tensors.n_alts)]
-                share_df = pd.DataFrame({
-                    "Alternative": alt_labels,
-                    "Actual Share": actual_shares,
-                    "Predicted Share": pred_shares,
-                })
-
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.dataframe(share_df, use_container_width=True, hide_index=True)
-
-                with c2:
-                    share_melt = share_df.melt(
-                        id_vars="Alternative",
-                        value_vars=["Actual Share", "Predicted Share"],
-                        var_name="Type",
-                        value_name="Share",
-                    )
-                    fig_share = px.bar(
-                        share_melt,
-                        x="Alternative",
-                        y="Share",
-                        color="Type",
-                        barmode="group",
-                        title="Predicted vs Actual Choice Shares",
-                        color_discrete_map={
-                            "Actual Share": "#FF7043",
-                            "Predicted Share": "#42A5F5",
-                        },
-                    )
-                    fig_share.update_layout(yaxis_tickformat=".1%", height=400)
-                    st.plotly_chart(fig_share, use_container_width=True, key="share_plot")
-
-            except Exception as exc:
-                st.warning(f"Could not compute predicted shares: {exc}")
-        else:
-            st.info("Model specification not available for prediction.")
+        _show_predictions()
 
     # Export
     st.divider()
@@ -686,8 +631,8 @@ else:
         "th { background-color: #f5f5f5; }",
         ".metric { display: inline-block; margin: 0.5em 1em; }",
         "</style></head><body>",
-        f"<h1>Estimation Report: {run_label}</h1>",
-        f"<p>Model type: <b>{model_type}</b></p>",
+        f"<h1>Estimation Report: {escape(run_label)}</h1>",
+        f"<p>Model type: <b>{escape(model_type)}</b></p>",
         "<h2>Model Fit</h2>",
         "<table><tr>",
         f"<th>Log-Likelihood</th><td>{estimation.log_likelihood:.4f}</td>",

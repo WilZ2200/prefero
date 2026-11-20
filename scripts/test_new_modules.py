@@ -2,11 +2,10 @@
 """Comprehensive tests for newly created/modified modules in Prefero.
 
 Tested modules:
-  1. app/auth.py          — Authentication (open access, username gate)
-  2. app/session_queue.py — Concurrent user queue
-  3. app/waiting_facts.py — Cultural facts list
-  4. app/pages/1_Data.py  — _generate_template_excel()
-  5. app/utils.py         — Integration (imports, session defaults, functions)
+  1. app/session_queue.py — Concurrent user queue
+  2. app/waiting_facts.py — Cultural facts list
+  3. app/pages/1_Data.py  — _generate_template_excel()
+  4. app/utils.py         — Integration (imports, session defaults, functions)
 """
 
 from __future__ import annotations
@@ -53,41 +52,7 @@ def _reset_session_state():
 
 
 # ══════════════════════════════════════════════════════════════════
-# 1. TESTS FOR app/auth.py
-# ══════════════════════════════════════════════════════════════════
-
-class TestAuth(unittest.TestCase):
-    """Tests for the authentication module (open access)."""
-
-    def setUp(self):
-        _reset_session_state()
-
-    # ── auth_gate ─────────────────────────────────────────────────
-
-    def test_auth_gate_always_returns_true(self):
-        from auth import auth_gate
-        self.assertTrue(auth_gate())
-
-    def test_auth_gate_sets_authenticated_flag(self):
-        from auth import auth_gate
-        auth_gate()
-        self.assertTrue(_mock_session_state.get("authenticated"))
-
-    # ── username_gate ─────────────────────────────────────────────
-
-    def test_username_gate_returns_true_when_username_set(self):
-        from auth import username_gate
-        _mock_session_state["username"] = "TestUser"
-        self.assertTrue(username_gate())
-
-    def test_username_gate_returns_false_when_no_username(self):
-        from auth import username_gate
-        result = username_gate()
-        self.assertFalse(result)
-
-
-# ══════════════════════════════════════════════════════════════════
-# 2. TESTS FOR app/session_queue.py
+# 1. TESTS FOR app/session_queue.py
 # ══════════════════════════════════════════════════════════════════
 
 class TestSessionQueue(unittest.TestCase):
@@ -349,7 +314,7 @@ class TestSessionQueue(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 3. TESTS FOR app/waiting_facts.py
+# 2. TESTS FOR app/waiting_facts.py
 # ══════════════════════════════════════════════════════════════════
 
 class TestWaitingFacts(unittest.TestCase):
@@ -391,7 +356,7 @@ class TestWaitingFacts(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. TESTS FOR app/pages/1_Data.py — _generate_template_excel
+# 3. TESTS FOR app/pages/1_Data.py — _generate_template_excel
 # ══════════════════════════════════════════════════════════════════
 
 class TestGenerateTemplateExcel(unittest.TestCase):
@@ -696,7 +661,7 @@ def _generate_template_excel():
 
 
 # ══════════════════════════════════════════════════════════════════
-# 5. TESTS FOR app/utils.py — Integration
+# 4. TESTS FOR app/utils.py — Integration
 # ══════════════════════════════════════════════════════════════════
 
 class TestUtils(unittest.TestCase):
@@ -708,10 +673,6 @@ class TestUtils(unittest.TestCase):
 
     # ── Imports ───────────────────────────────────────────────────
 
-    def test_import_auth_gate(self):
-        from auth import auth_gate
-        self.assertTrue(callable(auth_gate))
-
     def test_import_queue_gate(self):
         from session_queue import queue_gate
         self.assertTrue(callable(queue_gate))
@@ -721,16 +682,6 @@ class TestUtils(unittest.TestCase):
         self.assertTrue(callable(queue_heartbeat))
 
     # ── _SESSION_DEFAULTS ─────────────────────────────────────────
-
-    def test_session_defaults_has_authenticated_key(self):
-        from utils import _SESSION_DEFAULTS
-        self.assertIn("authenticated", _SESSION_DEFAULTS)
-        self.assertFalse(_SESSION_DEFAULTS["authenticated"])
-
-    def test_session_defaults_has_auth_email_key(self):
-        from utils import _SESSION_DEFAULTS
-        self.assertIn("auth_email", _SESSION_DEFAULTS)
-        self.assertEqual(_SESSION_DEFAULTS["auth_email"], "")
 
     def test_session_defaults_has_df_key(self):
         from utils import _SESSION_DEFAULTS
@@ -749,20 +700,6 @@ class TestUtils(unittest.TestCase):
         from utils import _SESSION_DEFAULTS
         self.assertIn("model_history", _SESSION_DEFAULTS)
         self.assertEqual(_SESSION_DEFAULTS["model_history"], [])
-
-    # ── require_auth ──────────────────────────────────────────────
-
-    def test_require_auth_function_exists(self):
-        from utils import require_auth
-        self.assertTrue(callable(require_auth))
-
-    def test_require_auth_noop_when_disabled(self):
-        """When auth is disabled, require_auth should not call st.stop()."""
-        from utils import require_auth
-        mock_st.stop.reset_mock()
-        require_auth()
-        # auth_gate returns True (auth disabled), so st.stop should NOT be called
-        mock_st.stop.assert_not_called()
 
     # ── require_queue_slot ────────────────────────────────────────
 
@@ -787,10 +724,14 @@ class TestUtils(unittest.TestCase):
         for key, default_val in _SESSION_DEFAULTS.items():
             self.assertIn(key, _mock_session_state,
                           f"Key '{key}' not found in session state after init")
-            # auth_gate() sets authenticated=True during init, so skip that check
-            if key == "authenticated":
-                continue
             self.assertEqual(_mock_session_state[key], default_val)
+
+    def test_anonymous_analysis_does_not_set_account_identity(self):
+        from utils import init_session_state
+
+        init_session_state()
+        for key in ("authenticated", "username", "user_id"):
+            self.assertNotIn(key, _mock_session_state)
 
     def test_init_session_state_does_not_overwrite_existing(self):
         from utils import init_session_state
@@ -828,7 +769,7 @@ if __name__ == "__main__":
     suite = unittest.TestSuite()
 
     # Add test classes in order
-    for cls in [TestAuth, TestSessionQueue, TestWaitingFacts,
+    for cls in [TestSessionQueue, TestWaitingFacts,
                 TestGenerateTemplateExcel, TestUtils]:
         suite.addTests(loader.loadTestsFromTestCase(cls))
 

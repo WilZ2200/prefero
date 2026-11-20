@@ -1,8 +1,19 @@
-.git
-.venv
-__pycache__
-.pytest_cache
-app/*.db
-app/*.db-*
-outputs
-thesis
+# Limit the build context to application source and this public fixture.
+**
+!Dockerfile
+!pyproject.toml
+!README.md
+!requirements.txt
+!LICENSE
+!LICENSE-AGPL
+!LICENSE-COMMERCIAL
+!app/
+!app/**/
+!app/**/*.py
+!src/
+!src/**/
+!src/**/*.py
+!.streamlit/
+!.streamlit/config.toml
+!data/
+!data/test_dce.xlsx

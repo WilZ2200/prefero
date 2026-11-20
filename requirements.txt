@@ -1,3 +1,4 @@
+# Tested app deployment versions. See pyproject.toml for package dependencies.
 numpy==2.5.3
 pandas==3.0.5
 scipy==1.18.1
@@ -6,4 +7,4 @@ torch==2.6.0
 streamlit==1.63.0
 plotly==7.0.0
 openpyxl==3.1.5
-huggingface_hub==1.30.0
+huggingface-hub==1.30.0

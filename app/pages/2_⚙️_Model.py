@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
@@ -129,6 +131,9 @@ bws_estimate_lambda_w: bool = True
 if bws_mode:
     # Auto-detect worst column candidates
     _worst_candidates = [c for c in columns if c not in {id_col, task_col, alt_col, choice_col}]
+    if not _worst_candidates:
+        st.warning("Best–worst analysis requires a separate worst-choice column.")
+        st.stop()
     _worst_default = _guess_col(columns, ["worst", "worst_choice", "least_preferred"], None)
     if _worst_default not in _worst_candidates:
         _worst_default = _worst_candidates[0] if _worst_candidates else columns[0]
@@ -150,7 +155,7 @@ if bws_mode:
             key="bws_estimate_lw",
             help="If checked, estimates a scale parameter lambda_w for worst choices. "
                  "lambda_w > 1 means worst choices are more deterministic; lambda_w < 1 means noisier. "
-                 "If unchecked, lambda_w = 1 (equivalent to MaxDiff specification).",
+                 "If unchecked, lambda_w is fixed at 1, so both stages have the same scale.",
         )
     st.caption(
         "BWS uses **sequential best-first** likelihood: "
@@ -164,11 +169,13 @@ st.subheader("2. Utility variables")
 st.markdown(
     "Select the **attributes that enter the utility function**. "
     "Each selected attribute will receive its own coefficient (beta) to be estimated. "
-    "Structural columns (ID, task, alternative, choice) are excluded automatically."
+    "ID, task, alternative and choice columns are excluded automatically."
 )
 
 # Allow selecting any numeric column (DCE attributes are typically numeric-coded)
 structural_cols = {id_col, task_col, alt_col, choice_col}
+if bws_worst_col is not None:
+    structural_cols.add(bws_worst_col)
 numeric_columns = [c for c in columns if pd.api.types.is_numeric_dtype(df[c]) and c not in structural_cols]
 default_features = [
     c
@@ -338,25 +345,25 @@ elif model_type == "gmnl":
 
     gmnl_variant_label = st.selectbox(
         "GMNL variant",
-        ["GMNL (General)", "S-MNL (gamma=0)", "GMNL-II (gamma=1)"],
+        ["GMNL (General)", "S-MNL (pure scale)", "GMNL-I (gamma=1)", "GMNL-II (gamma=0)"],
         key="gmnl_variant_select",
         help=(
             "**GMNL (General):** gamma is freely estimated (Fiebig et al. 2010). "
-            "**S-MNL:** gamma fixed at 0 — pure scale heterogeneity only; "
-            "all taste variation comes from individual scale differences. "
-            "**GMNL-II:** gamma fixed at 1 — scale multiplies the full "
-            "individual-specific beta (mean + deviation)."
+            "**S-MNL:** tastes vary only through individual scale. "
+            "**GMNL-I:** scale multiplies the coefficient mean. "
+            "**GMNL-II:** scale multiplies both the mean and the taste deviation."
         ),
     )
     _gmnl_variant_map = {
         "GMNL (General)": "general",
-        "S-MNL (gamma=0)": "s-mnl",
-        "GMNL-II (gamma=1)": "gmnl-ii",
+        "S-MNL (pure scale)": "s-mnl",
+        "GMNL-I (gamma=1)": "gmnl-i",
+        "GMNL-II (gamma=0)": "gmnl-ii",
     }
     gmnl_variant = _gmnl_variant_map[gmnl_variant_label]
 
     st.markdown("**Distribution assumptions**")
-    st.caption("Set distributions for each variable. At least one random variable is required.")
+    st.caption("Set distributions for taste variation. With all tastes fixed, only scale varies.")
     with st.expander("What do the distribution options mean?"):
         st.markdown(
             "- **fixed**: The coefficient is the same for all respondents.\n"
@@ -370,9 +377,9 @@ elif model_type == "gmnl":
             default_dist_idx = 0
             dist_val = st.selectbox(
                 f"{col}" + (" (dummy)" if coding_map.get(col) == "dummy" else ""),
-                ["fixed", "normal", "lognormal"],
+                ["fixed"] if gmnl_variant == "s-mnl" else ["fixed", "normal", "lognormal"],
                 index=default_dist_idx,
-                key=f"gmnl_dist_{col}",
+                key=f"gmnl_dist_{col}", disabled=gmnl_variant == "s-mnl",
             )
             if coding_map.get(col) == "dummy" and col in _dummy_info:
                 for dc in _dummy_info[col]:
@@ -391,13 +398,9 @@ elif model_type == "gmnl":
 
     with st.expander("About GMNL scale parameters"):
         st.markdown(
-            "The GMNL model estimates additional scale parameters:\n"
-            "- **tau** (scale mean): controls the average scale of utility.\n"
-            "- **sigma_tau** (scale SD): individual variation in scale.\n"
-            "- **gamma** (mixing, 0-1): gamma=0 is pure scale heterogeneity (S-MNL), "
-            "gamma=1 is GMNL-II (closest to standard MMNL).\n\n"
-            "When using **S-MNL** or **GMNL-II**, gamma is fixed and not estimated — "
-            "reducing the parameter count by 1."
+            "The scale factor has mean 1. **sigma_tau** is the standard deviation "
+            "of log scale. **Gamma** controls how much scale affects taste deviations "
+            "and is estimated in general GMNL with random tastes."
         )
 
     # ── Correlation structure for GMNL ────────────────────────────────
@@ -663,7 +666,7 @@ if st.session_state.interaction_terms:
         c_label.markdown(f"- `{label}`")
         if c_remove.button("Remove", key=f"remove_inter_{idx}"):
             pass  # skip this term
-        else:
+        elif all(col in _interaction_available_cols for col in term):
             _terms_to_keep.append(term)
             _het_interactions.append(InteractionTerm(columns=term))
     if len(_terms_to_keep) != len(st.session_state.interaction_terms):
@@ -672,10 +675,20 @@ if st.session_state.interaction_terms:
     st.caption(f"{len(_het_interactions)} interaction term(s) configured.")
 
 # ── Sidebar: model history count ──────────────────────────────────
+def _delete_history_model(index: int) -> None:
+    deleted = st.session_state.model_history.pop(index)
+    current = st.session_state.model_results
+    if current is not None and current["estimation"] is deleted["estimation"]:
+        st.session_state.model_results = None
+        st.session_state.lc_result = None
+        st.session_state.bootstrap_results = None
+        st.session_state.pop("bootstrap_run_id", None)
+
+
 history: list[dict] = st.session_state.model_history
 if history:
     st.sidebar.divider()
-    st.sidebar.metric("Saved models", len(history))
+    st.sidebar.metric("Model runs in this session", len(history))
     st.sidebar.markdown("**Model history**")
     _sidebar_delete_idx: int | None = None
     for _si, entry in enumerate(history):
@@ -686,10 +699,7 @@ if history:
             if st.button("✕", key=f"sidebar_del_{_si}", help="Delete this model"):
                 _sidebar_delete_idx = _si
     if _sidebar_delete_idx is not None:
-        _deleted = st.session_state.model_history.pop(_sidebar_delete_idx)
-        _cur = st.session_state.model_results
-        if _cur is not None and _cur.get("label") == _deleted.get("label"):
-            st.session_state.model_results = None
+        _delete_history_model(_sidebar_delete_idx)
         st.rerun()
 
 
@@ -722,8 +732,8 @@ def _show_results(estimation, run_label: str, header_suffix: str = "") -> None:
     m3.metric("BIC", f"{estimation.bic:,.2f}")
     m4.metric(
         "Runtime (s)", f"{estimation.runtime_seconds:.2f}",
-        help="This is the time Slowbro spent on core estimation (number crunching). "
-             "Slowbro also handles other chores — data preparation, parameter expansion, "
+        help="This is the time spent in the optimizer. "
+             "Prefero also handles other chores — data preparation, parameter expansion, "
              "post-processing, and standard error computation — so the actual wall-clock "
              "time you experienced is slightly longer.",
     )
@@ -783,8 +793,8 @@ def _show_lc_results(estimation, run_label: str) -> None:
     m3.metric("BIC", f"{estimation.bic:,.2f}")
     m4.metric(
         "Runtime (s)", f"{estimation.runtime_seconds:.2f}",
-        help="This is the time Slowbro spent on core estimation (number crunching). "
-             "Slowbro also handles other chores — data preparation, parameter expansion, "
+        help="This is the time spent in the optimizer. "
+             "Prefero also handles other chores — data preparation, parameter expansion, "
              "post-processing, and standard error computation — so the actual wall-clock "
              "time you experienced is slightly longer.",
     )
@@ -966,7 +976,7 @@ def _suggest_model_name() -> str:
     prefix_map = {"conditional": "CL", "mixed": "MXL", "gmnl": "GMNL", "latent_class": "LC"}
     prefix = prefix_map[model_type]
     if model_type == "gmnl" and gmnl_variant != "general":
-        variant_labels = {"s-mnl": "S-MNL", "gmnl-ii": "GMNL-II"}
+        variant_labels = {"s-mnl": "S-MNL", "gmnl-i": "GMNL-I", "gmnl-ii": "GMNL-II"}
         prefix = variant_labels.get(gmnl_variant, prefix)
     parts: list[str] = [prefix]
 
@@ -1028,19 +1038,20 @@ def _build_param_names() -> list[dict[str, str]]:
     """
     rows: list[dict[str, str]] = []
     idx = 0
+    utility_cols = expanded_feature_cols + [interaction.name for interaction in _het_interactions]
 
     if model_type == "conditional":
-        for col in expanded_feature_cols:
+        for col in utility_cols:
             rows.append({"#": str(idx), "Parameter": f"beta_{col}",
                          "Description": f"Coefficient for {col}"})
             idx += 1
 
     elif model_type in ("mixed", "gmnl"):
         # Mean parameters
-        for col in expanded_feature_cols:
+        for col in utility_cols:
             d = dist_map.get(col, "fixed")
             if d == "fixed":
-                rows.append({"#": str(idx), "Parameter": f"mu_{col}",
+                rows.append({"#": str(idx), "Parameter": f"beta_{col}",
                              "Description": f"Fixed coefficient for {col}"})
                 idx += 1
             else:
@@ -1093,21 +1104,9 @@ def _build_param_names() -> list[dict[str, str]]:
                              "Description": f"SD of {d} coefficient for {col} (raw, softplus-transformed)"})
                 idx += 1
 
-        if model_type == "gmnl":
-            rows.append({"#": str(idx), "Parameter": "tau",
-                         "Description": "Scale mean (0 = unit scale)"})
-            idx += 1
-            rows.append({"#": str(idx), "Parameter": "raw_sigma_tau",
-                         "Description": "Scale SD (raw, softplus-transformed)"})
-            idx += 1
-            if gmnl_variant == "general":
-                rows.append({"#": str(idx), "Parameter": "raw_gamma",
-                             "Description": "Mixing parameter (raw, sigmoid -> [0,1])"})
-                idx += 1
-
     elif model_type == "latent_class":
         for q in range(1, n_classes + 1):
-            for col in expanded_feature_cols:
+            for col in utility_cols:
                 rows.append({"#": str(idx), "Parameter": f"beta_{col}_class{q}",
                              "Description": f"Coefficient for {col} in class {q}"})
                 idx += 1
@@ -1127,11 +1126,17 @@ def _build_param_names() -> list[dict[str, str]]:
                                  "Description": f"Log-odds of class {q} vs class 1"})
                     idx += 1
 
-    # BWS lambda_w (appended last for all model types)
     if bws_mode and bws_estimate_lambda_w:
         rows.append({"#": str(idx), "Parameter": "raw_lambda_w",
                      "Description": "Worst-choice scale (raw, softplus-transformed)"})
         idx += 1
+
+    if model_type == "gmnl":
+        rows.append({"#": str(idx), "Parameter": "raw_sigma_tau",
+                     "Description": "Log-scale SD (raw, softplus-transformed)"})
+        if gmnl_variant == "general" and _random_cols:
+            rows.append({"#": str(idx + 1), "Parameter": "raw_gamma",
+                         "Description": "Mixing parameter (raw, sigmoid -> [0,1])"})
 
     return rows
 
@@ -1244,7 +1249,7 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
     # Pass the original DataFrame; backend handles dummy expansion
     est_df = df
 
-    # ── Slowbro waiting UI ──────────────────────────────────────
+    # ── Estimation progress ──────────────────────────────────────
     import random as _rng
     from trivia import TRIVIA_FACTS
 
@@ -1260,7 +1265,7 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
     _waiting_placeholder.markdown(
         f'''
         <style>
-        .slowbro-waiting {{
+        .estimation-waiting {{
             margin: 16px 0;
             max-width: 520px;
         }}
@@ -1286,13 +1291,9 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
             color: #999;
             line-height: 1.3;
         }}
-        /* Switch top-right Slowbro to working state */
-        [data-testid="stHeader"]::after {{
-            content: "working on caffeine..." !important;
-        }}
         </style>
-        <div class="slowbro-waiting">
-            <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">Slowbro is working...</div>
+        <div class="estimation-waiting">
+            <div style="font-size:0.85rem; color:#aaa; margin-bottom:8px;">Estimating model…</div>
             <div class="trivia-box">
                 <div class="trivia-roll">
                     {_trivia_items}
@@ -1314,12 +1315,7 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
         st.error(f"Estimation failed: {exc}")
         try:
             from community_db import log_activity
-            import traceback as _tb
-            _tb_str = _tb.format_exc()
-            log_activity(st.session_state.get("username", "anonymous"), "estimation_error", f"model={model_type}, error={str(exc)[:200]}")
-            logger_msg = f"Estimation error: {_tb_str}"
-            import logging
-            logging.getLogger("prefero").warning(logger_msg)
+            log_activity("estimation_error")
         except Exception:
             pass
         st.stop()
@@ -1333,23 +1329,20 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
     run_label = run_name.strip() if run_name.strip() else _suggested_name
 
     # Store as current result (use expanded spec/df for Results page compatibility)
-    st.session_state.model_results = {
+    run = {
+        "run_id": uuid4().hex,
         "spec": result.expanded_spec or full_spec.to_model_spec(),
         "full_spec": full_spec,
         "model_type": model_type,
         "estimation": estimation,
         "label": run_label,
-        "expanded_df": result.expanded_df,
     }
+    st.session_state.model_results = {**run, "expanded_df": result.expanded_df}
 
     # Append to history for comparison page
-    st.session_state.model_history.append({
-        "label": run_label,
-        "model_type": model_type,
-        "spec": result.expanded_spec or full_spec.to_model_spec(),
-        "full_spec": full_spec,
-        "estimation": estimation,
-    })
+    st.session_state.model_history.append(run)
+    st.session_state.bootstrap_results = None
+    st.session_state.pop("bootstrap_run_id", None)
 
     # Also store LC-specific result
     if model_type == "latent_class":
@@ -1358,10 +1351,10 @@ if st.button("Run Estimation", type="primary", use_container_width=True):
             "label": run_label,
         }
 
-    st.success(f"Model **{run_label}** estimated successfully.")
     try:
         from community_db import log_activity
-        log_activity(st.session_state.get("username", "anonymous"), "estimation_success", f"model={model_type}, label={run_label}, LL={estimation.log_likelihood:.2f}, AIC={estimation.aic:.2f}, runtime={estimation.runtime_seconds:.1f}s")
+        event = "estimation_success" if estimation.success else "estimation_not_converged"
+        log_activity(event)
     except Exception:
         pass
 
@@ -1381,33 +1374,6 @@ elif st.session_state.model_results is not None:
     else:
         _show_results(est, label, header_suffix=" (last run)")
 
-# ── Save to Profile button (always visible when results exist) ────
-if st.session_state.model_results is not None:
-    _username = st.session_state.get("username", "")
-    if _username:
-        _n_saved = len(st.session_state.get("saved_models", []))
-        if _n_saved >= 10:
-            st.warning("You've reached the limit of 10 saved models. Delete one from your profile to save more.")
-        else:
-            _cur_label = st.session_state.model_results.get("label", "model")
-            # Check if already saved
-            _already_saved = any(
-                sm.get("label") == _cur_label
-                for sm in st.session_state.get("saved_models", [])
-            )
-            if _already_saved:
-                st.info(f"Model **{_cur_label}** is already saved to your profile.")
-            else:
-                if st.button("💾 Save to Profile", key="_save_to_profile", type="primary", use_container_width=True):
-                    from model_store import save_model, load_models
-                    _entry = st.session_state.model_results
-                    if save_model(_username, _entry):
-                        st.session_state.saved_models = load_models(_username)
-                        st.success(f"Model '{_cur_label}' saved to your profile!")
-                        st.rerun()
-                    else:
-                        st.error("Could not save — you may have reached the 10-model limit.")
-
 # ── LC: BIC comparison tool ───────────────────────────────────────
 if model_type == "latent_class":
     st.divider()
@@ -1417,11 +1383,9 @@ if model_type == "latent_class":
     )
 
     if st.button("Run BIC comparison (Q = 2..5)", use_container_width=True):
-        import plotly.express as px
-
         try:
             from community_db import log_activity
-            log_activity(st.session_state.get("username", "anonymous"), "bic_comparison", "Q_range=2-5")
+            log_activity("bic_comparison")
         except Exception:
             pass
 
@@ -1431,8 +1395,6 @@ if model_type == "latent_class":
             bic_variables.append(VariableSpec(name=col, column=col, distribution="fixed"))
 
         bic_rows: list[dict] = []
-        best_bic = float("inf")
-        best_q = 2
         progress = st.progress(0, text="Starting class comparison...")
 
         for i, q in enumerate([2, 3, 4, 5]):
@@ -1442,6 +1404,7 @@ if model_type == "latent_class":
                 choice_col=choice_col, variables=bic_variables,
                 model_type="latent_class",
                 dummy_codings=_dummy_codings,
+                interactions=_het_interactions,
                 n_classes=q, n_starts=int(n_starts),
                 maxiter=int(maxiter), seed=int(est_seed),
                 membership_cols=lc_membership_cols if lc_membership_cols else None,
@@ -1457,9 +1420,6 @@ if model_type == "latent_class":
                     "AIC": round(est.aic, 2), "BIC": round(est.bic, 2),
                     "Parameters": est.n_parameters, "Converged": est.success,
                 })
-                if est.bic < best_bic:
-                    best_bic = est.bic
-                    best_q = q
             except Exception as exc:
                 bic_rows.append({
                     "Q": q, "Log-Likelihood": None, "AIC": None,
@@ -1470,34 +1430,24 @@ if model_type == "latent_class":
         st.session_state["_estimation_running"] = False
         progress.progress(1.0, text="Done!")
 
-        bic_df = pd.DataFrame(bic_rows)
-        st.session_state.lc_bic_comparison = bic_df
-        st.session_state.lc_best_q = best_q
+        st.session_state.lc_bic_comparison = pd.DataFrame(bic_rows)
 
-        st.dataframe(bic_df, use_container_width=True, hide_index=True)
-
-        valid = bic_df.dropna(subset=["BIC"])
-        if not valid.empty:
-            fig_bic = px.line(valid, x="Q", y="BIC", markers=True, title="BIC by Number of Classes")
-            fig_bic.add_vline(x=best_q, line_dash="dash", line_color="green",
-                              annotation_text=f"Best Q = {best_q}")
-            st.plotly_chart(fig_bic, use_container_width=True)
-
-        st.info(f"Recommended number of classes: **Q = {best_q}**")
-
-    elif st.session_state.get("lc_bic_comparison") is not None:
+    if st.session_state.get("lc_bic_comparison") is not None:
         import plotly.express as px
 
         bic_df = st.session_state.lc_bic_comparison
-        best_q = st.session_state.lc_best_q
         st.dataframe(bic_df, use_container_width=True, hide_index=True)
-        valid = bic_df.dropna(subset=["BIC"])
+        finite_bic = bic_df["BIC"].apply(lambda value: value is not None and math.isfinite(value))
+        valid = bic_df.loc[bic_df["Converged"] & finite_bic]
         if not valid.empty:
+            best_q = int(valid.loc[valid["BIC"].idxmin(), "Q"])
             fig_bic = px.line(valid, x="Q", y="BIC", markers=True, title="BIC by Number of Classes")
             fig_bic.add_vline(x=best_q, line_dash="dash", line_color="green",
                               annotation_text=f"Best Q = {best_q}")
             st.plotly_chart(fig_bic, use_container_width=True)
-        st.info(f"Recommended number of classes: **Q = {best_q}**")
+            st.info(f"Recommended number of classes by BIC: **Q = {best_q}**")
+        else:
+            st.warning("No candidate converged with a finite BIC.")
 
 # ── Show saved model history ──────────────────────────────────────
 if st.session_state.model_history:
@@ -1518,60 +1468,7 @@ if st.session_state.model_history:
                 _delete_idx = i
 
     if _delete_idx is not None:
-        _deleted = st.session_state.model_history.pop(_delete_idx)
-        # Clear current results if they match the deleted model
-        _cur = st.session_state.model_results
-        if _cur is not None and _cur.get("label") == _deleted.get("label"):
-            st.session_state.model_results = None
-        st.rerun()
-
-# ── Saved models from profile ──────────────────────────────────
-_saved = st.session_state.get("saved_models", [])
-if _saved:
-    st.divider()
-    st.subheader("Saved Models (Profile)")
-    st.caption("These models are saved to your profile and persist across sessions.")
-    _profile_delete_idx: int | None = None
-    _profile_load_idx: int | None = None
-    for i, sm in enumerate(_saved):
-        est = sm.get("estimation")
-        _info_c, _load_c, _del_c = st.columns([5, 1, 1])
-        with _info_c:
-            _saved_at = sm.get("saved_at", "")
-            if _saved_at:
-                _saved_at = _saved_at[:10]  # just date
-            st.markdown(
-                f"**{i+1}. {sm.get('label', 'model')}** ({sm.get('model_type', '?')}) "
-                f"-- LL: {est.log_likelihood:.3f}, AIC: {est.aic:.2f}, BIC: {est.bic:.2f} "
-                f"<span style='color:gray;font-size:0.8em;'>({_saved_at})</span>",
-                unsafe_allow_html=True,
-            )
-        with _load_c:
-            if st.button("Load", key=f"_load_saved_{i}"):
-                _profile_load_idx = i
-        with _del_c:
-            if st.button("Delete", key=f"_del_saved_{i}"):
-                _profile_delete_idx = i
-
-    if _profile_load_idx is not None:
-        _loaded = _saved[_profile_load_idx]
-        st.session_state.model_results = {
-            "spec": _loaded.get("spec"),
-            "full_spec": _loaded.get("full_spec"),
-            "model_type": _loaded.get("model_type"),
-            "estimation": _loaded["estimation"],
-            "label": _loaded.get("label"),
-            "expanded_df": None,
-        }
-        if _loaded not in st.session_state.model_history:
-            st.session_state.model_history.append(_loaded)
-        st.rerun()
-
-    if _profile_delete_idx is not None:
-        _username = st.session_state.get("username", "")
-        from model_store import delete_saved_model, load_models
-        if delete_saved_model(_username, _profile_delete_idx):
-            st.session_state.saved_models = load_models(_username)
+        _delete_history_model(_delete_idx)
         st.rerun()
 
 slowbro_next_step("pages/2_⚙️_Model.py")

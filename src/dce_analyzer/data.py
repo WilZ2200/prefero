@@ -51,20 +51,22 @@ def load_long_csv(path: str | Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def validate_long_format(df: pd.DataFrame, spec: ModelSpec) -> None:
-    """Validate core long-format assumptions."""
-    required_cols = {
-        spec.id_col,
-        spec.task_col,
-        spec.alt_col,
-        spec.choice_col,
-        *[v.column for v in spec.variables],
-    }
+def _validate_choice_layout(
+    df: pd.DataFrame, id_col: str, task_col: str, alt_col: str, choice_col: str,
+) -> tuple[int, int]:
+    key_cols = [id_col, task_col, alt_col]
+    required_cols = [*key_cols, choice_col]
+    if len(set(required_cols)) != len(required_cols):
+        raise ValueError("Respondent, task, alternative and choice must use distinct columns.")
+    if not df.columns.is_unique:
+        raise ValueError("Input data must have unique column names.")
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
+    empty_cols = df[required_cols].isna().any()
+    if empty_cols.any():
+        raise ValueError(f"Missing values in required columns: {empty_cols[empty_cols].index.tolist()}")
 
-    key_cols = [spec.id_col, spec.task_col, spec.alt_col]
     if df.duplicated(subset=key_cols).any():
         dup_rows = int(df.duplicated(subset=key_cols).sum())
         raise ValueError(
@@ -72,7 +74,7 @@ def validate_long_format(df: pd.DataFrame, spec: ModelSpec) -> None:
             "Each alternative in each task should appear once."
         )
 
-    group_sizes = df.groupby([spec.id_col, spec.task_col]).size()
+    group_sizes = df.groupby([id_col, task_col], observed=True).size()
     if group_sizes.empty:
         raise ValueError("Input dataframe is empty after grouping by id and task.")
     if (group_sizes < 2).any():
@@ -82,22 +84,36 @@ def validate_long_format(df: pd.DataFrame, spec: ModelSpec) -> None:
             "Each (id, task) must have the same number of alternatives. "
             "Variable-size choice sets are not supported in this baseline."
         )
+    return len(group_sizes), int(group_sizes.iloc[0])
+
+
+def validate_long_format(df: pd.DataFrame, spec: ModelSpec) -> None:
+    """Validate structural columns and the selected utility attribute names."""
+    _validate_choice_layout(df, spec.id_col, spec.task_col, spec.alt_col, spec.choice_col)
+    _validate_variables(df, spec)
+
+
+def _validate_variables(df: pd.DataFrame, spec: ModelSpec) -> None:
+    columns = [v.column for v in spec.variables]
+    if any(c in {spec.id_col, spec.task_col, spec.alt_col, spec.choice_col} for c in columns):
+        raise ValueError("Utility attributes cannot use respondent, task, alternative or choice columns.")
+    missing = [c for c in columns if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
 
 
 def _choice_indices(choice_matrix: np.ndarray, alt_matrix: np.ndarray) -> np.ndarray:
     """Convert either one-hot choices or chosen-alt labels to index targets."""
-    unique_vals = np.unique(choice_matrix)
-    # One-hot / binary indicator format.
-    if np.isin(unique_vals, [0, 1]).all():
-        row_sums = choice_matrix.sum(axis=1)
-        if not np.allclose(row_sums, 1.0):
-            bad = int(np.where(~np.isclose(row_sums, 1.0))[0][0])
-            raise ValueError(
-                f"Choice indicator rows must sum to 1. Row {bad} sums to {row_sums[bad]}."
-            )
-        return np.argmax(choice_matrix, axis=1).astype(np.int64)
+    if pd.isna(choice_matrix).any() or pd.isna(alt_matrix).any():
+        raise ValueError("Choice and alternative columns must not contain missing values.")
+    choice_matrix = choice_matrix.astype(object, copy=False)
+    alt_matrix = alt_matrix.astype(object, copy=False)
+    if np.isin(choice_matrix, [0, 1]).all():
+        indicators = choice_matrix == 1
+        if (indicators.sum(axis=1) == 1).all():
+            return np.argmax(indicators, axis=1)
 
-    # Label format: each row in a task repeats the same chosen alternative code.
+    # Binary alternative codes can also be repeated labels.
     row_constant = np.all(choice_matrix == choice_matrix[:, [0]], axis=1)
     if not row_constant.all():
         raise ValueError(
@@ -113,7 +129,21 @@ def _choice_indices(choice_matrix: np.ndarray, alt_matrix: np.ndarray) -> np.nda
             "Could not map choice code to exactly one alternative in each task. "
             f"First invalid task index: {bad}."
         )
-    return np.argmax(matches, axis=1).astype(np.int64)
+    return np.argmax(matches, axis=1)
+
+
+def chosen_row_mask(
+    df: pd.DataFrame, id_col: str, task_col: str, alt_col: str, choice_col: str,
+) -> np.ndarray:
+    """Return a Boolean mask in original row order, true for each chosen alternative."""
+    shape = _validate_choice_layout(df, id_col, task_col, alt_col, choice_col)
+    ordered = df.reset_index(drop=True).sort_values([id_col, task_col, alt_col])
+    choices = ordered[choice_col].to_numpy().reshape(shape)
+    alternatives = ordered[alt_col].to_numpy().reshape(shape)
+    selected = _choice_indices(choices, alternatives)
+    mask = np.zeros(len(df), dtype=bool)
+    mask[ordered.index.to_numpy().reshape(shape)[np.arange(len(selected)), selected]] = True
+    return mask
 
 
 def prepare_choice_tensors(
@@ -128,7 +158,10 @@ def prepare_choice_tensors(
     - one-hot indicator (0/1), or
     - chosen alternative label repeated across alternatives in the task.
     """
-    validate_long_format(df, spec)
+    n_obs, n_alts = _validate_choice_layout(
+        df, spec.id_col, spec.task_col, spec.alt_col, spec.choice_col,
+    )
+    _validate_variables(df, spec)
 
     if device is None:
         device = get_best_device()
@@ -137,25 +170,26 @@ def prepare_choice_tensors(
     work = df.sort_values(sort_cols).reset_index(drop=True)
 
     group_cols = [spec.id_col, spec.task_col]
-    n_obs = int(work.groupby(group_cols).ngroups)
-    n_alts = int(work.groupby(group_cols).size().iloc[0])
     n_vars = len(spec.variables)
 
     feature_cols = [v.column for v in spec.variables]
-    X_flat = work.loc[:, feature_cols].astype(float).to_numpy(dtype=np.float32)
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            X_flat = work[feature_cols].to_numpy(dtype=np.float32, na_value=np.nan)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Selected utility attributes must be numeric. Encode categories first.") from exc
+    nonfinite = ~np.isfinite(X_flat).all(axis=0)
+    if nonfinite.any():
+        invalid_cols = [col for col, bad in zip(feature_cols, nonfinite) if bad]
+        raise ValueError(f"Utility attributes must be finite and non-missing: {invalid_cols}")
     X = X_flat.reshape(n_obs, n_alts, n_vars)
 
-    choice_mat = (
-        work.loc[:, spec.choice_col]
-        .to_numpy(dtype=work.loc[:, spec.choice_col].dtype)
-        .reshape(n_obs, n_alts)
-    )
+    choice_mat = work[spec.choice_col].to_numpy().reshape(n_obs, n_alts)
     alt_mat = work.loc[:, spec.alt_col].to_numpy().reshape(n_obs, n_alts)
     y = _choice_indices(choice_mat, alt_mat)
 
     task_table = work.loc[:, group_cols].drop_duplicates()
-    obs_ids = task_table.loc[:, spec.id_col].to_numpy()
-    unique_ids, panel_idx = np.unique(obs_ids, return_inverse=True)
+    panel_idx, unique_ids = pd.factorize(task_table[spec.id_col].to_numpy(), sort=True)
 
     return ChoiceTensors(
         X=torch.tensor(X, dtype=torch.float32, device=device),

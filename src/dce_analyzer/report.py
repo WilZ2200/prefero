@@ -25,6 +25,7 @@ import pandas as pd
 from .config import FullModelSpec, ModelSpec, VariableSpec
 from .latent_class import LatentClassResult
 from .model import EstimationResult
+from .wtp import WTP_ESTIMAND
 
 # Optional dependencies for charts
 try:
@@ -365,7 +366,9 @@ def _build_executive_summary(
         f"The model <strong>{converge_word}</strong> with a log-likelihood of "
         f"<strong>{_format_number(ll, 3)}</strong>."
     )
-    if n_total > 0:
+    if not success:
+        lines.append("Treat the coefficients as optimiser diagnostics. Fit the model to convergence before inference.")
+    if success and n_total > 0:
         lines.append(
             f"{n_sig} of {n_total} parameters are statistically significant "
             f"at the 5% level."
@@ -801,7 +804,7 @@ def _build_wtp(wtp_df: pd.DataFrame | None) -> str:
     # Keep relevant columns
     keep = [c for c in (
         "attribute", "wtp_estimate", "wtp_std_error", "wtp_ci_lower", "wtp_ci_upper",
-        "wtp", "wtp_se", "wtp_ci_lower", "wtp_ci_upper",
+        "wtp", "wtp_se",
         "parameter", "estimate", "std_error", "ci_lower", "ci_upper",
     ) if c in display.columns]
     if keep:
@@ -838,7 +841,10 @@ def _build_wtp(wtp_df: pd.DataFrame | None) -> str:
 
         if wtp_val_col and attr_col in wtp_df.columns:
             fig = go.Figure()
-            wtp_has_ci = "wtp_ci_lower" in wtp_df.columns and "wtp_ci_upper" in wtp_df.columns
+            wtp_has_ci = (
+                {"wtp_ci_lower", "wtp_ci_upper"} <= set(wtp_df.columns)
+                and wtp_df[["wtp_ci_lower", "wtp_ci_upper"]].notna().all(axis=1).any()
+            )
 
             if wtp_has_ci:
                 fig.add_trace(go.Bar(
@@ -879,8 +885,7 @@ def _build_wtp(wtp_df: pd.DataFrame | None) -> str:
   <h2>Willingness to Pay</h2>
   {tbl}
   <p style="font-size:0.85rem;color:var(--clr-muted);margin-top:0.5rem">
-    WTP estimates are computed as the ratio of each attribute coefficient to the
-    cost/price coefficient. Confidence intervals are derived via the delta method.
+    {_esc(WTP_ESTIMAND)} Where available, confidence intervals use the delta method.
   </p>
   {chart_html}
 </div>
@@ -1067,6 +1072,8 @@ def _build_predictions(predictions_df: pd.DataFrame | None) -> str:
     return f"""\
 <div class="section">
   <h2>Predicted Choice Shares</h2>
+  <p>Predicted shares average model probabilities over the observed choice sets.
+    For best-worst models, the shares refer to the best choice.</p>
   {tbl}
   {chart_html}
 </div>
@@ -1422,6 +1429,7 @@ def generate_report_html(
     bootstrap: Any = None,
     full_spec: FullModelSpec | None = None,
     predictions_df: pd.DataFrame | None = None,
+    section_notes: list[str] | None = None,
 ) -> str:
     """Generate a complete, standalone HTML report string.
 
@@ -1448,6 +1456,8 @@ def generate_report_html(
     predictions_df : pd.DataFrame | None
         Optional predicted vs actual choice shares DataFrame.
         Expected columns: ``Alternative``, ``Actual Share``, ``Predicted Share``.
+    section_notes : list[str] | None
+        Reasons any requested sections are unavailable.
 
     Returns
     -------
@@ -1459,6 +1469,9 @@ def generate_report_html(
     sections: list[str] = []
     sections.append(_build_title(run_label, data_label, model_type, now))
     sections.append(_build_executive_summary(estimation, model_type, full_spec))
+    if section_notes:
+        notes = "".join(f"<li>{_esc(note)}</li>" for note in section_notes)
+        sections.append(f'<div class="section"><h2>Report notes</h2><ul>{notes}</ul></div>')
     sections.append(_build_data_summary(data_label, data_shape, estimation))
     sections.append(_build_model_spec(model_type, spec, full_spec))
     sections.append(_build_model_fit(estimation))

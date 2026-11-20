@@ -882,6 +882,8 @@ class LatentClassEstimator:
         initial_theta: np.ndarray | None = None,
     ) -> LatentClassResult:
         """Fit the latent class model using the EM algorithm with multiple random starts."""
+        if maxiter < 1:
+            raise ValueError("maxiter must be positive.")
         total_start_time = time.perf_counter()
         rng = np.random.default_rng(self.seed)
         Q, K = self.n_classes, self.n_vars
@@ -908,21 +910,10 @@ class LatentClassEstimator:
                 ll_history: list[float] = []
                 converged = False
 
+                weights, ll = self._e_step_torch(theta)
+                if not np.isfinite(ll):
+                    raise FloatingPointError("Non-finite initial EM likelihood.")
                 for em_iter in range(maxiter):
-                    # ── E-step (all on GPU) ──────────────────────
-                    weights, ll = self._e_step_torch(theta)
-                    ll_history.append(ll)
-
-                    if verbose:
-                        logger.info(
-                            "Start %d  EM iter %d  LL=%.6f", i_start, em_iter, ll,
-                        )
-
-                    # ── Convergence check (require >= 10 iters first) ──
-                    if em_iter >= 10 and abs(ll - ll_history[-2]) < em_tol:
-                        converged = True
-                        break
-
                     # ── Early abandon: skip hopeless starts ──────
                     if em_iter == 20 and best_ll > -np.inf and ll < best_ll - 50:
                         logger.debug(
@@ -931,6 +922,8 @@ class LatentClassEstimator:
                         )
                         break
 
+                    previous_theta = theta
+                    previous_ll = ll
                     # ── M-step: class-specific betas (vectorized on GPU) ──
                     betas_current = theta[: Q * K].reshape(Q, K)
                     lambda_w_val = self._get_lambda_w(theta)
@@ -967,7 +960,25 @@ class LatentClassEstimator:
                         theta = theta.clone()
                         theta[self._lambda_w_idx] = raw_lw
 
-                final_ll = ll_history[-1] if ll_history else -np.inf
+                    updated_weights, ll = self._e_step_torch(theta)
+                    if not np.isfinite(ll):
+                        raise FloatingPointError("Non-finite EM likelihood.")
+                    if ll < previous_ll:
+                        rounding = 8 * np.finfo(np.float32).eps * max(abs(previous_ll), 1)
+                        if previous_ll - ll > rounding:
+                            raise FloatingPointError("EM update decreased the likelihood.")
+                        theta, ll = previous_theta, previous_ll
+                    else:
+                        weights = updated_weights
+                    ll_history.append(ll)
+
+                    if verbose:
+                        logger.info("Start %d  EM iter %d  LL=%.6f", i_start, em_iter + 1, ll)
+                    if em_iter >= 9 and abs(ll - previous_ll) < em_tol:
+                        converged = True
+                        break
+
+                final_ll = ll
                 n_succeeded += 1
                 all_start_lls.append(final_ll)
 

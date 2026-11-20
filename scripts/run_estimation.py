@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
 import pandas as pd
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -56,6 +58,7 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated variable list: col[:dist], e.g., price:normal,time:normal",
     )
     parser.add_argument("--model", choices=["mixed", "conditional", "latent_class"], default="mixed")
+    parser.add_argument("--device", choices=["auto", "cpu"], default="auto")
     parser.add_argument("--draws", type=int, default=200)
     parser.add_argument("--n-classes", type=int, default=2, help="Number of latent classes (only for latent_class model)")
     parser.add_argument("--maxiter", type=int, default=200)
@@ -64,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
     df = pd.read_csv(args.data)
     variables = parse_variable_specs(args.variables)
@@ -84,12 +87,13 @@ def main() -> None:
         model_type=args.model,
         maxiter=args.maxiter,
         seed=args.seed,
+        device=torch.device("cpu") if args.device == "cpu" else None,
     )
     save_estimation_outputs(result.estimation, args.out_prefix)
 
     summary = result.estimation.summary_dict()
-    print("Estimation finished.")
-    print(f"Converged: {summary['success']}")
+    converged = summary["success"] and math.isfinite(summary["log_likelihood"])
+    print(f"Converged: {converged}")
     print(f"Message: {summary['message']}")
     print(f"Log-likelihood: {summary['log_likelihood']:.4f}")
     print(f"AIC: {summary['aic']:.2f}")
@@ -97,7 +101,8 @@ def main() -> None:
     print(f"Iterations: {summary['optimizer_iterations']}")
     print(f"Runtime (s): {summary['runtime_seconds']:.2f}")
     print(f"Saved outputs with prefix: {args.out_prefix}")
+    return 0 if converged else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

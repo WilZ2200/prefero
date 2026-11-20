@@ -11,18 +11,19 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
+from scipy.special import expit
 from scipy.stats import norm, qmc
 
 from .bws import BwsData, bws_log_prob, standard_log_prob
 from .config import VariableSpec
 from .data import ChoiceTensors
-from .optimization import fit_lbfgs
+from .optimization import fit_lbfgs, rescale_parameters
 
 logger = logging.getLogger(__name__)
 
 
 def _positive(raw: torch.Tensor) -> torch.Tensor:
-    return torch.nn.functional.softplus(raw) + 1e-6
+    return torch.nn.functional.softplus(raw)
 
 
 def generate_halton_draws(
@@ -104,6 +105,8 @@ class MixedLogitEstimator:
         correlated: bool = False,
         correlation_groups: list[list[int]] | None = None,
         bws_data: BwsData | None = None,
+        *,
+        scale_draws: bool = False,
     ) -> None:
         if len(variables) != tensors.X.shape[2]:
             raise ValueError(
@@ -215,15 +218,18 @@ class MixedLogitEstimator:
                 self._lambda_w_idx = self.n_params
                 self.n_params += 1
 
-        self.n_draws = int(n_draws if self.n_random_vars > 0 else 1)
+        self.n_draws = int(n_draws if self.n_random_vars or scale_draws else 1)
 
         draws_np = generate_halton_draws(
             n_individuals=self.n_individuals,
             n_draws=self.n_draws,
-            n_dims=self.n_random_vars,
+            n_dims=self.n_random_vars + int(scale_draws),
             seed=seed,
         )
-        self.draws = torch.tensor(draws_np, dtype=torch.float32, device=self.device)
+        draws = torch.tensor(draws_np, dtype=torch.float32, device=self.device)
+        self.draws = draws[:, :, :self.n_random_vars]
+        if scale_draws:
+            self.scale_draws = draws[:, :, -1]
 
     def _initial_theta(self) -> np.ndarray:
         theta0 = np.zeros(self.n_params, dtype=np.float64)
@@ -310,12 +316,14 @@ class MixedLogitEstimator:
 
         return betas
 
-    def _neg_log_likelihood_tensor(self, theta: torch.Tensor) -> torch.Tensor:
+    def _neg_log_likelihood_tensor(
+        self, theta: torch.Tensor, X: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         betas = self._betas_from_theta(theta)
         betas_obs = betas[self.panel_idx]  # (n_obs, n_draws, n_vars)
 
         # Utilities (n_obs, n_draws, n_alts)
-        utility = torch.einsum("nav,ndv->nda", self.X, betas_obs)
+        utility = torch.einsum("nav,ndv->nda", self.X if X is None else X, betas_obs)
 
         if self._bws_data is None:
             log_prob = standard_log_prob(utility, self.y, alt_dim=2)
@@ -340,7 +348,9 @@ class MixedLogitEstimator:
             return torch.nn.functional.softplus(theta[self._lambda_w_idx]) + 1e-6
         return 1.0
 
-    def _compute_vcov(self, theta_hat: np.ndarray) -> np.ndarray | None:
+    def _compute_vcov(
+        self, theta_hat: np.ndarray, X: torch.Tensor | None = None,
+    ) -> np.ndarray | None:
         """Compute variance-covariance matrix via the Hessian of the neg-log-likelihood."""
         try:
             theta_t = torch.tensor(
@@ -348,7 +358,7 @@ class MixedLogitEstimator:
             )
 
             def nll_fn(t: torch.Tensor) -> torch.Tensor:
-                return self._neg_log_likelihood_tensor(t)
+                return self._neg_log_likelihood_tensor(t, X)
 
             H = torch.autograd.functional.hessian(nll_fn, theta_t)
             H_np = H.detach().cpu().numpy().astype(np.float64)
@@ -370,7 +380,7 @@ class MixedLogitEstimator:
 
     def _softplus_derivative(self, raw: float) -> float:
         """Derivative of softplus: d/dx log(1+exp(x)) = sigmoid(x)."""
-        return float(1.0 / (1.0 + np.exp(-raw)))
+        return float(expit(raw))
 
     def _parameter_table(
         self, theta_hat: np.ndarray, vcov: np.ndarray | None = None,
@@ -414,7 +424,7 @@ class MixedLogitEstimator:
             for (row, col, tidx, is_diag) in self._chol_mapping:
                 raw_val = theta_hat[tidx]
                 if is_diag:
-                    val = float(np.logaddexp(0.0, raw_val) + 1e-6)
+                    val = float(np.logaddexp(0.0, raw_val))
                 else:
                     val = float(raw_val)
                 label = f"chol_{self._random_param_names[row]}_{self._random_param_names[col]}"
@@ -440,7 +450,7 @@ class MixedLogitEstimator:
                     rows.append(self._make_row(f"beta_{name}", dist, float(theta_hat[idx[0]]), se, theta_index=idx[0]))
                 else:
                     raw_sd = theta_hat[idx[1]]
-                    sd = float(np.logaddexp(0.0, raw_sd) + 1e-6)
+                    sd = float(np.logaddexp(0.0, raw_sd))
 
                     se_mu = float("nan")
                     se_sd = float("nan")
@@ -473,7 +483,7 @@ class MixedLogitEstimator:
         L = np.zeros((K, K), dtype=np.float64)
         for (row, col, tidx, is_diag) in self._chol_mapping:
             if is_diag:
-                L[row, col] = float(np.logaddexp(0.0, theta_hat[tidx]) + 1e-6)
+                L[row, col] = float(np.logaddexp(0.0, theta_hat[tidx]))
             else:
                 L[row, col] = float(theta_hat[tidx])
         return L
@@ -496,7 +506,7 @@ class MixedLogitEstimator:
             def _build_L_differentiable(th: torch.Tensor) -> torch.Tensor:
                 L = torch.zeros(K, K, dtype=torch.float64, device=cpu)
                 for row, col, tidx, is_diag in mapping:
-                    val = torch.nn.functional.softplus(th[tidx]) + 1e-6 if is_diag else th[tidx]
+                    val = _positive(th[tidx]) if is_diag else th[tidx]
                     e = torch.zeros(K, K, dtype=torch.float64, device=cpu)
                     e[row, col] = 1.0
                     L = L + e * val
@@ -510,7 +520,8 @@ class MixedLogitEstimator:
                 L = _build_L_differentiable(th)
                 Sigma = L @ L.T
                 sd = torch.sqrt(torch.diag(Sigma))
-                sd_out = torch.clamp(sd.unsqueeze(1) * sd.unsqueeze(0), min=1e-10)
+                sd_out = sd.unsqueeze(1) * sd.unsqueeze(0)
+                sd_out = torch.where(sd_out > 0, sd_out, torch.ones_like(sd_out))
                 return (Sigma / sd_out).reshape(-1)
 
             J_cov = torch.autograd.functional.jacobian(_cov_flat, theta_t)
@@ -567,32 +578,68 @@ class MixedLogitEstimator:
             "theta_index": theta_index,
         }
 
+    def _parameter_units(
+        self, design_scale: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Map raw parameters from standardised design units to original units."""
+        multipliers = np.ones(self.n_params)
+        offsets = np.zeros(self.n_params)
+        positive = np.zeros(self.n_params, dtype=bool)
+        random_multipliers = np.ones(self.n_random_vars)
+        for p in self._param_defs:
+            unit = design_scale[p["var_idx"]]
+            mu_idx = p["theta_mu_idx"]
+            draw_idx = p["draw_idx"]
+            if p["distribution"] == "lognormal":
+                offsets[mu_idx] = -np.log(unit)
+            else:
+                multipliers[mu_idx] = 1.0 / unit
+                if draw_idx is not None:
+                    random_multipliers[draw_idx] = 1.0 / unit
+            if draw_idx is not None and not self.correlated:
+                sd_idx = p["theta_indices"][1]
+                multipliers[sd_idx] = random_multipliers[draw_idx]
+                positive[sd_idx] = True
+        for row, _, index, is_diag in self._chol_mapping:
+            multipliers[index] = random_multipliers[row]
+            positive[index] = is_diag
+        return multipliers, offsets, positive
+
     def fit(
         self,
         maxiter: int = 300,
         verbose: bool = False,
         initial_theta: list[float] | None = None,
     ) -> EstimationResult:
+        # A shared utility offset cancels within each choice set.
+        centered = self.X - self.X[:, :1]
+        scale = centered.abs().amax(dim=(0, 1))
+        scale = torch.where(scale > 0, scale, torch.ones_like(scale))
+        X = centered / scale
+        factors, offsets, positive = self._parameter_units(scale.cpu().numpy().astype(float))
         if initial_theta is not None:
             theta0 = np.asarray(initial_theta, dtype=np.float64)
             if len(theta0) != self.n_params:
                 raise ValueError(
                     f"custom_start has {len(theta0)} values but model expects {self.n_params} parameters."
                 )
+            theta0, _ = rescale_parameters(theta0, 1.0 / factors, -offsets / factors, positive)
         else:
             theta0 = self._initial_theta()
         opt = fit_lbfgs(
-            self._neg_log_likelihood_tensor, theta0, device=self.device,
+            lambda params: self._neg_log_likelihood_tensor(params, X), theta0, device=self.device,
             maxiter=maxiter, loss_scale=self.n_obs,
         )
         runtime = opt.runtime_seconds
 
-        theta_hat = np.asarray(opt.x)
+        theta_hat, jacobian = rescale_parameters(opt.x, factors, offsets, positive)
         loglike = -float(opt.fun)
         k = self.n_params
 
         # Compute variance-covariance matrix from the Hessian
-        vcov = self._compute_vcov(theta_hat)
+        vcov = self._compute_vcov(opt.x, X)
+        if vcov is not None:
+            vcov = jacobian[:, None] * vcov * jacobian[None, :]
         estimates = self._parameter_table(theta_hat, vcov)
 
         # Compute random-parameter covariance and correlation matrices
@@ -665,19 +712,11 @@ class ConditionalLogitEstimator(MixedLogitEstimator):
 
 
 class GmnlEstimator(MixedLogitEstimator):
-    """
-    Generalized Multinomial Logit (GMNL) estimator.
+    """GMNL with lognormal scale normalised to have population mean one.
 
-    Fiebig et al. (2010): extends MMNL with scale heterogeneity.
-
-    beta_i = sigma_i * beta_bar + gamma * eta_i
-
-    where:
-      sigma_i = exp(tau + sigma_tau * epsilon_i),  epsilon_i ~ N(0,1)
-      eta_i   = random parameter deviations (from standard MMNL draws)
-      gamma   in [0,1] controls mixing (0 = pure scale, 1 = GMNL-II)
-
-    Extra parameters beyond MMNL: tau, sigma_tau (raw), gamma (raw).
+    Taste beta has the form ``scale * mean + (gamma + (1 - gamma) * scale) * deviation``.
+    Fixed gamma 1 gives GMNL-I and fixed gamma 0 gives GMNL-II. All-fixed
+    tastes give S-MNL, in which gamma does not enter the likelihood.
     """
 
     def __init__(
@@ -692,109 +731,48 @@ class GmnlEstimator(MixedLogitEstimator):
         correlation_groups: list[list[int]] | None = None,
         fixed_gamma: float | None = None,
     ) -> None:
+        if fixed_gamma is not None and not 0.0 <= fixed_gamma <= 1.0:
+            raise ValueError("fixed_gamma must be between 0 and 1.")
         super().__init__(
-            tensors=tensors,
-            variables=variables,
-            n_draws=n_draws,
-            device=device,
-            seed=seed,
-            correlated=correlated,
-            correlation_groups=correlation_groups,
-            bws_data=bws_data,
+            tensors=tensors, variables=variables, n_draws=n_draws, device=device,
+            seed=seed, correlated=correlated, correlation_groups=correlation_groups,
+            bws_data=bws_data, scale_draws=True,
         )
-        self._fixed_gamma = fixed_gamma  # None = free, 0.0 = S-MNL, 1.0 = GMNL-II
-
-        # Extra Halton draws for scale heterogeneity (one dim per individual per draw)
-        scale_draws_np = generate_halton_draws(
-            n_individuals=self.n_individuals,
-            n_draws=self.n_draws,
-            n_dims=1,
-            seed=seed + 9999,
-        )
-        self.scale_draws = torch.tensor(
-            scale_draws_np[:, :, 0], dtype=torch.float32, device=self.device
-        )  # (n_individuals, n_draws)
-
-        # Indices for the extra GMNL parameters appended after MMNL params
-        self._tau_idx = self.n_params          # tau (scale mean)
-        self._sigma_tau_idx = self.n_params + 1  # raw sigma_tau (scale SD, softplus)
+        self._fixed_gamma = fixed_gamma if self.n_random_vars else 0.0
+        self._sigma_tau_idx = self.n_params
+        self.n_params += 1
+        self._gamma_idx = None
         if self._fixed_gamma is None:
-            # gamma is a free parameter
-            self._gamma_idx = self.n_params + 2      # raw gamma (sigmoid -> [0,1])
-            self.n_params += 3
-        else:
-            # gamma is fixed — not a free parameter
-            self._gamma_idx = None
-            self.n_params += 2
+            self._gamma_idx = self.n_params
+            self.n_params += 1
 
     def _initial_theta(self) -> np.ndarray:
-        # Delegate to parent for MMNL params (handles both independent & correlated)
         theta0 = super()._initial_theta()
-        # Extend to include GMNL-specific params (already allocated in n_params)
-        if len(theta0) < self.n_params:
-            theta0 = np.concatenate([theta0, np.zeros(self.n_params - len(theta0), dtype=np.float64)])
-        # tau=0 -> mean scale=1, raw_sigma_tau=-1 -> small scale SD
-        theta0[self._tau_idx] = 0.0
         theta0[self._sigma_tau_idx] = -1.0
-        if self._gamma_idx is not None:
-            # raw_gamma=0 -> gamma=0.5
-            theta0[self._gamma_idx] = 0.0
         return theta0
 
     def _betas_from_theta(self, theta: torch.Tensor) -> torch.Tensor:
-        """Compute individual-draw-specific betas with GMNL scale heterogeneity.
+        log_scale_sd = _positive(theta[self._sigma_tau_idx])
+        scale = torch.exp(log_scale_sd * (self.scale_draws - 0.5 * log_scale_sd)).unsqueeze(2)
+        base_betas = super()._betas_from_theta(theta)
+        if self._fixed_gamma == 0.0:
+            return scale * base_betas
 
-        Works for both independent and correlated random parameters.
-        Delegates to parent's _betas_from_theta for base MMNL betas (handles
-        Cholesky for correlated case), then decomposes into mean + deviation
-        and applies GMNL transformation: beta_i = sigma_i * beta_bar + gamma * eta_i.
-        """
-        n_vars = self.X.shape[2]
+        gamma = self._fixed_gamma if self._gamma_idx is None else torch.sigmoid(theta[self._gamma_idx])
+        variances = self._build_cholesky_L(theta).square().sum(dim=1) if self.correlated else None
+        means = []
+        for param in self._param_defs:
+            mean = theta[param["theta_mu_idx"]]
+            if param["distribution"] == "lognormal":
+                if variances is None:
+                    variance = _positive(theta[param["theta_indices"][1]]).square()
+                else:
+                    variance = variances[param["draw_idx"]]
+                mean = torch.exp(mean + 0.5 * variance)
+            means.append(mean)
 
-        tau = theta[self._tau_idx]
-        sigma_tau = _positive(theta[self._sigma_tau_idx])
-        if self._fixed_gamma is not None:
-            gamma = torch.tensor(self._fixed_gamma, dtype=theta.dtype, device=theta.device)
-        else:
-            gamma = torch.sigmoid(theta[self._gamma_idx])
-
-        # Scale factor: sigma_i = exp(tau + sigma_tau * epsilon_i)
-        # shape: (n_individuals, n_draws)
-        sigma_i = torch.exp(tau + sigma_tau * self.scale_draws)
-
-        # Get base MMNL betas from parent (handles both independent and correlated)
-        base_betas = super()._betas_from_theta(theta)  # (N, R, n_vars)
-
-        # Decompose into population mean (beta_bar) and individual deviations (eta)
-        beta_bar = torch.zeros(n_vars, dtype=torch.float32, device=self.device)
-        eta = torch.zeros_like(base_betas)
-
-        for p in self._param_defs:
-            var_idx = p["var_idx"]
-            dist = p["distribution"]
-
-            if dist == "fixed":
-                beta_bar[var_idx] = theta[p["theta_mu_idx"]]
-                # eta stays 0 for fixed params — they get scaled by sigma_i only
-                continue
-
-            mu = theta[p["theta_mu_idx"]]
-            if dist == "normal":
-                beta_bar[var_idx] = mu
-                eta[:, :, var_idx] = base_betas[:, :, var_idx] - mu
-            elif dist == "lognormal":
-                # For lognormal: deviation = realized - E[exp(mu + sd*z)]
-                expected = base_betas[:, :, var_idx].mean()
-                beta_bar[var_idx] = expected
-                eta[:, :, var_idx] = base_betas[:, :, var_idx] - expected
-            else:
-                raise ValueError(f"Unsupported distribution '{dist}'.")
-
-        # beta_ir = sigma_ir * beta_bar + gamma * eta_ir
-        # sigma_i: (N, R) -> (N, R, 1)
-        betas = sigma_i.unsqueeze(2) * beta_bar.unsqueeze(0).unsqueeze(0) + gamma * eta
-
-        return betas
+        mean = torch.stack(means)
+        return scale * mean + (gamma + (1 - gamma) * scale) * (base_betas - mean)
 
     def _parameter_table(
         self, theta_hat: np.ndarray, vcov: np.ndarray | None = None,
@@ -804,20 +782,19 @@ class GmnlEstimator(MixedLogitEstimator):
         rows = base_df.to_dict("records")
 
         # Append GMNL scale heterogeneity parameters
-        tau_est = float(theta_hat[self._tau_idx])
         raw_sigma_tau = theta_hat[self._sigma_tau_idx]
-        sigma_tau_est = float(np.logaddexp(0.0, raw_sigma_tau) + 1e-6)
+        sigma_tau_est = float(np.logaddexp(0.0, raw_sigma_tau))
 
-        se_tau = float("nan")
         se_sigma_tau = float("nan")
         if vcov is not None:
-            se_tau = float(np.sqrt(max(vcov[self._tau_idx, self._tau_idx], 0.0)))
             var_raw_st = vcov[self._sigma_tau_idx, self._sigma_tau_idx]
             deriv_st = self._softplus_derivative(raw_sigma_tau)
             se_sigma_tau = float(abs(deriv_st) * np.sqrt(max(var_raw_st, 0.0)))
 
-        rows.append(self._make_row("tau (scale mean)", "scale", tau_est, se_tau, theta_index=self._tau_idx))
         rows.append(self._make_row("sigma_tau (scale SD)", "scale", sigma_tau_est, se_sigma_tau, theta_index=self._sigma_tau_idx))
+
+        if not self.n_random_vars:
+            return pd.DataFrame(rows)
 
         if self._fixed_gamma is not None:
             # gamma is fixed — report as fixed value with no SE
@@ -827,7 +804,7 @@ class GmnlEstimator(MixedLogitEstimator):
             ))
         else:
             raw_gamma = theta_hat[self._gamma_idx]
-            gamma_est = float(1.0 / (1.0 + np.exp(-raw_gamma)))
+            gamma_est = float(expit(raw_gamma))
             se_gamma = float("nan")
             if vcov is not None:
                 var_raw_g = vcov[self._gamma_idx, self._gamma_idx]

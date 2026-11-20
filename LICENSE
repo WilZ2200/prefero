@@ -1,15 +1,9 @@
 Copyright (C) 2026 Hengzhe Zhao. All rights reserved.
 
-This software is dual-licensed:
+Prefero is available under the GNU Affero General Public License,
+version 3 (AGPL-3.0-only). See LICENSE-AGPL for the licence terms.
+The AGPL route is available for any use that meets its terms,
+including commercial use.
 
-1. OPEN-SOURCE LICENSE (AGPL-3.0)
-   For academic, research, and open-source use, this software is licensed
-   under the GNU Affero General Public License v3.0. See LICENSE-AGPL for
-   the full license text.
-
-2. COMMERCIAL LICENSE
-   For commercial or proprietary use (including SaaS deployment), a separate
-   commercial license is required. See LICENSE-COMMERCIAL for details.
-
-Unless you have obtained a commercial license, any use of this software is
-governed by the AGPL-3.0 terms.
+A separate commercial licence is available for users who need rights
+beyond the AGPL terms. See LICENSE-COMMERCIAL for details.

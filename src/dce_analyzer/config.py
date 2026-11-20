@@ -67,8 +67,6 @@ class DummyCoding:
 
         Does NOT mutate *df*.
         """
-        import pandas as pd
-
         unique_vals = sorted(df[self.column].dropna().unique())
         non_ref = [v for v in unique_vals if v != self.ref_level]
         names: list[str] = []
@@ -133,7 +131,7 @@ class FullModelSpec:
     bws_worst_col: str | None = None
     estimate_lambda_w: bool = True
 
-    # GMNL variant: "general" (gamma free), "s-mnl" (gamma=0), "gmnl-ii" (gamma=1)
+    # GMNL variants: general, pure scale (s-mnl), GMNL-I, and GMNL-II.
     gmnl_variant: str = "general"
 
     # Latent class
@@ -154,6 +152,15 @@ class FullModelSpec:
             raise ValueError(
                 f"model_type must be one of {valid_types}, got '{self.model_type}'."
             )
+        if self.model_type == "gmnl" and self.gmnl_variant not in {
+            "general", "s-mnl", "gmnl-i", "gmnl-ii",
+        }:
+            raise ValueError(f"Unsupported GMNL variant '{self.gmnl_variant}'.")
+        predictors = {v.column for v in self.variables}
+        predictors.update(self.membership_cols or [])
+        predictors.update(col for term in self.interactions for col in term.columns)
+        if self.choice_col in predictors or self.bws_worst_col in predictors:
+            raise ValueError("Choice outcomes cannot be used as predictors.")
         core_cols = [self.id_col, self.task_col, self.alt_col, self.choice_col]
         if any(not c for c in core_cols):
             raise ValueError("id_col, task_col, alt_col, and choice_col must all be set.")
@@ -169,8 +176,19 @@ class FullModelSpec:
             task_col=self.task_col,
             alt_col=self.alt_col,
             choice_col=self.choice_col,
-            variables=list(self.variables),
+            variables=[
+                VariableSpec(v.name, v.column, "fixed") if self.pure_scale else v
+                for v in self.variables
+            ],
             n_draws=self.n_draws,
             n_classes=self.n_classes,
             membership_cols=self.membership_cols,
         )
+
+    @property
+    def pure_scale(self) -> bool:
+        return self.model_type == "gmnl" and self.gmnl_variant == "s-mnl"
+
+    @property
+    def fixed_gamma(self) -> float | None:
+        return {"s-mnl": 0.0, "gmnl-i": 1.0, "gmnl-ii": 0.0}.get(self.gmnl_variant)

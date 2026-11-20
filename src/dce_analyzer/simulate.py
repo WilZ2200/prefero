@@ -37,7 +37,8 @@ def generate_simulated_dce(
         (income, age) with their original distributions.
     bws : bool
         If True, generate a ``worst`` column (binary 0/1) alongside the best
-        choice column.  Requires ``n_alts >= 3``.
+        choice column. Worst choices are sampled among the remaining alternatives
+        with the same utility scale and an independent shock. Requires ``n_alts >= 3``.
     """
     if n_individuals < 1 or n_tasks < 1 or n_alts < 2:
         raise ValueError("Need n_individuals >= 1, n_tasks >= 1, n_alts >= 2.")
@@ -45,6 +46,7 @@ def generate_simulated_dce(
         raise ValueError("BWS simulation requires n_alts >= 3.")
 
     rng = np.random.default_rng(seed)
+    worst_rng = np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(1,))) if bws else None
     alt_constants = np.linspace(0.0, 0.35, num=n_alts)
 
     # ── custom vs hardcoded path ──────────────────────────────────
@@ -80,6 +82,8 @@ def generate_simulated_dce(
 
     for alt_idx in range(1, n_alts):
         true_params[f"asc_alt_{alt_idx + 1}"] = float(alt_constants[alt_idx])
+    if bws:
+        true_params["lambda_w"] = 1.0
 
     rows: list[dict[str, float | int]] = []
 
@@ -142,10 +146,10 @@ def generate_simulated_dce(
             chosen_alt = int(np.argmax(utilities))
 
             # ── worst choice (BWS) ───────────────────────────────
-            if bws:
-                remaining_utils = utilities.copy()
-                remaining_utils[chosen_alt] = np.inf  # exclude best
-                worst_alt = int(np.argmin(remaining_utils))
+            if worst_rng is not None:
+                worst_utility = -deterministic_utility + worst_rng.gumbel(size=n_alts)
+                worst_utility[chosen_alt] = -np.inf
+                worst_alt = int(np.argmax(worst_utility))
 
             for alt in range(n_alts):
                 row: dict[str, float | int] = {

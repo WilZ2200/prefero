@@ -131,7 +131,7 @@ WAITING_FACTS: list[str] = [
     "(check their appearance) while waiting, reducing perceived wait time.",
 
     "In computational queuing theory, the 'M/M/1 queue' is the simplest model — "
-    "one server, Poisson arrivals, exponential service time. Much like Slowbro "
+    "one server, Poisson arrivals, exponential service time. This resembles an app "
     "handling one model at a time.",
 
     "Fun fact: the word 'queue' comes from the Latin 'cauda', meaning tail. "

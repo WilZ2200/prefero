@@ -116,9 +116,15 @@ def validate_bws(
     spec: ModelSpec,
     worst_col: str,
 ) -> None:
-    """Validate BWS requirements: J>=3, worst_col exists, worst!=best per task."""
+    """Validate structural requirements before decoding best and worst choices."""
     if worst_col not in df.columns:
         raise ValueError(f"Worst choice column '{worst_col}' not in data.")
+    if worst_col in {spec.id_col, spec.task_col, spec.alt_col, spec.choice_col}:
+        raise ValueError("Worst choice must use a distinct column.")
+    if df[worst_col].isna().any():
+        raise ValueError(f"Missing values in worst choice column '{worst_col}'.")
+    if any(v.column == worst_col for v in spec.variables):
+        raise ValueError("The worst choice outcome cannot be a utility attribute.")
     # Check J >= 3
     group_sizes = df.groupby([spec.id_col, spec.task_col]).size()
     if group_sizes.min() < 3:
@@ -138,20 +144,12 @@ def prepare_bws_data(
     sort_cols = [spec.id_col, spec.task_col, spec.alt_col]
     work = df.sort_values(sort_cols).reset_index(drop=True)
 
-    worst_mat = (
-        work[worst_col]
-        .to_numpy(dtype=work[worst_col].dtype)
-        .reshape(n_obs, n_alts)
-    )
+    worst_mat = work[worst_col].to_numpy().reshape(n_obs, n_alts)
     alt_mat = work[spec.alt_col].to_numpy().reshape(n_obs, n_alts)
     y_worst_np = _choice_indices(worst_mat, alt_mat)
 
     # Also compute best-choice indices to validate worst != best
-    choice_mat = (
-        work[spec.choice_col]
-        .to_numpy(dtype=work[spec.choice_col].dtype)
-        .reshape(n_obs, n_alts)
-    )
+    choice_mat = work[spec.choice_col].to_numpy().reshape(n_obs, n_alts)
     y_best_np = _choice_indices(choice_mat, alt_mat)
 
     conflicts = np.where(y_worst_np == y_best_np)[0]
